@@ -21,6 +21,12 @@
 //! `bin/gwc/gwcomp.ml`, not the wiki page, which lags it. Where this crate reproduces a
 //! non-obvious rule, the corresponding OCaml function is named in a comment.
 
+/// Compiles the examples in `README.md` as doctests, so a change to the API that the
+/// README still describes the old way fails the build instead of shipping.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct Readme;
+
 pub mod database;
 pub mod date;
 pub mod encoding;

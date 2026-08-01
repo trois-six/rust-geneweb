@@ -14,7 +14,7 @@ introduced in GeneWeb 7.00, which adds structured personal and family events.
 Once a file is read you can convert it to [`ged_io`](https://github.com/ge3224/ged_io)'s
 GEDCOM model and use everything that crate offers.
 
-```rust
+```rust,no_run
 use geneweb::database::GwDatabase;
 use ged_io::writer::GedcomWriter;
 
