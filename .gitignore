@@ -1,0 +1,14 @@
+/target
+
+# Committed on purpose: the CI pins an MSRV toolchain, and without a lockfile a new
+# release of a transitive dependency can raise its own MSRV and break that job for
+# reasons unrelated to this crate. Current Cargo guidance is to commit it for libraries
+# too.
+# Cargo.lock
+
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+
+# Private genealogy data used for local testing; never committed.
+/samples

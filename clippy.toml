@@ -1,0 +1,8 @@
+# Product and format names that are not Rust identifiers, so `doc_markdown` should not
+# demand backticks around them.
+doc-valid-idents = [
+    "GeneWeb",
+    "GEDCOM",
+    "OCaml",
+    "..",
+]
