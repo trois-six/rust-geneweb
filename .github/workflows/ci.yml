@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+# A second push to a branch cancels the run still going for the first.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -19,7 +27,9 @@ jobs:
         # The MSRV declared in Cargo.toml, plus current stable.
         rust: ["1.88", stable]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      # This action is versioned by branch, not by tag: `master` is what upstream
+      # documents for a toolchain chosen at run time, as the matrix does here.
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
@@ -30,7 +40,7 @@ jobs:
     name: Format and lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
