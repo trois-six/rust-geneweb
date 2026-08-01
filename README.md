@@ -2,6 +2,8 @@
 
 **A reader for GeneWeb `.gw` genealogy files, with conversion to GEDCOM**
 
+[![Crates.io](https://img.shields.io/crates/v/geneweb.svg)](https://crates.io/crates/geneweb)
+[![Documentation](https://docs.rs/geneweb/badge.svg)](https://docs.rs/geneweb)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## What is `geneweb`?
