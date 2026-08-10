@@ -1,6 +1,6 @@
 [package]
 name = "geneweb"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 # Dictated by ged_io 0.16, which uses `slice::as_chunks` (stabilised in 1.88).
 # ged_io declares no rust-version of its own, so this is verified here, not inherited.

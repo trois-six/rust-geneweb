@@ -63,7 +63,7 @@ pub fn person_event(name: &PersonEventName) -> EventMapping {
 
         P::Emigration => EventMapping::standard(Event::Emigration),
         P::FirstCommunion => EventMapping::standard(Event::FirstCommunion),
-        P::Education | P::Graduate => EventMapping::standard(Event::Graduation),
+        P::Graduate => EventMapping::standard(Event::Graduation),
         P::Immigration => EventMapping::standard(Event::Immigration),
         P::Naturalisation => EventMapping::standard(Event::Naturalization),
         P::Ordination => EventMapping::standard(Event::Ordination),
@@ -75,6 +75,7 @@ pub fn person_event(name: &PersonEventName) -> EventMapping {
         // Standard GEDCOM tags that `ged_io` does not model as variants; they keep their
         // GeneWeb label so no meaning is lost.
         P::Dotation => EventMapping::generic("ENDL"),
+        P::Education => EventMapping::generic("EDUC"),
         P::Occupation => EventMapping::generic("OCCU"),
         P::Property => EventMapping::generic("PROP"),
         P::ScellentChildLds => EventMapping::generic("SLGC"),
@@ -152,6 +153,23 @@ pub fn witness_relationship(kind: WitnessKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn education_and_graduation_stay_distinct() {
+        // `#educ` and `#grad` are two different facts: schooling, and the degree that
+        // ends it. Both used to become `GRAD`, so a person's education was
+        // indistinguishable from their graduation once exported — and reading the file
+        // back could not tell them apart either. GEDCOM records schooling as the `EDUC`
+        // attribute, which `ged_io` does not model as an `Event` variant, so it takes
+        // the same shape as `OCCU` and `PROP` above.
+        let education = person_event(&PersonEventName::Education);
+        assert_eq!(education.event, Event::Event);
+        assert_eq!(education.event_type.as_deref(), Some("EDUC"));
+
+        let graduation = person_event(&PersonEventName::Graduate);
+        assert_eq!(graduation.event, Event::Graduation);
+        assert_eq!(graduation.event_type, None);
+    }
 
     #[test]
     fn every_named_event_maps_to_something() {
