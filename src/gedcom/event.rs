@@ -55,11 +55,11 @@ pub fn person_event(name: &PersonEventName) -> EventMapping {
         P::Cremation => EventMapping::standard(Event::Cremation),
         // GEDCOM has one `BAPM`; GeneWeb distinguishes the LDS ordinance, which the
         // `.gw` tag recorded alongside the event preserves.
-        P::Baptism | P::BaptismLds => EventMapping::standard(Event::Baptism),
+        P::Baptism => EventMapping::standard(Event::Baptism),
         P::BarMitzvah => EventMapping::standard(Event::BarMitzvah),
         P::BatMitzvah => EventMapping::standard(Event::BasMitzvah),
         P::Benediction => EventMapping::standard(Event::Blessing),
-        P::Confirmation | P::ConfirmationLds => EventMapping::standard(Event::Confirmation),
+        P::Confirmation => EventMapping::standard(Event::Confirmation),
 
         P::Emigration => EventMapping::standard(Event::Emigration),
         P::FirstCommunion => EventMapping::standard(Event::FirstCommunion),
@@ -74,6 +74,8 @@ pub fn person_event(name: &PersonEventName) -> EventMapping {
 
         // Standard GEDCOM tags that `ged_io` does not model as variants; they keep their
         // GeneWeb label so no meaning is lost.
+        P::BaptismLds => EventMapping::generic("BAPL"),
+        P::ConfirmationLds => EventMapping::generic("CONL"),
         P::Dotation => EventMapping::generic("ENDL"),
         P::Education => EventMapping::generic("EDUC"),
         P::Occupation => EventMapping::generic("OCCU"),
@@ -169,6 +171,31 @@ mod tests {
         let graduation = person_event(&PersonEventName::Graduate);
         assert_eq!(graduation.event, Event::Graduation);
         assert_eq!(graduation.event_type, None);
+    }
+
+    #[test]
+    fn lds_ordinances_stay_distinct_from_their_civil_counterparts() {
+        // An LDS baptism and confirmation are ordinances of their own, with their
+        // own GEDCOM tags. Folding them onto BAPM/CONF made a member's ordinance
+        // indistinguishable from the ordinary sacrament once exported.
+        for (name, tag) in [
+            (PersonEventName::BaptismLds, "BAPL"),
+            (PersonEventName::ConfirmationLds, "CONL"),
+        ] {
+            let m = person_event(&name);
+            assert_eq!(m.event, Event::Event, "{tag}");
+            assert_eq!(m.event_type.as_deref(), Some(tag));
+        }
+
+        // The civil ones keep their own standard tags.
+        assert_eq!(
+            person_event(&PersonEventName::Baptism).event,
+            Event::Baptism
+        );
+        assert_eq!(
+            person_event(&PersonEventName::Confirmation).event,
+            Event::Confirmation
+        );
     }
 
     #[test]

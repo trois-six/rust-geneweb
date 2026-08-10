@@ -10,7 +10,7 @@ checksum = "2e0e9de5bf1897eb138701598ccdac2a372f6375b714a77b0cff60e2ebbc30c0"
 
 [[package]]
 name = "geneweb"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ged_io",
 ]
