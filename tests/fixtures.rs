@@ -130,7 +130,9 @@ fn gallery_page_keeps_its_media_reference() {
         .iter()
         .find(|page| page.name == "Gallery")
         .expect("the Gallery extended page");
-    assert!(gallery.text.contains("\"img\": \"jean_pierre.0.galichet.jpg\""));
+    assert!(gallery
+        .text
+        .contains("\"img\": \"jean_pierre.0.galichet.jpg\""));
 
     let data = db.to_gedcom();
     let page = data

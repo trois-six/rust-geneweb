@@ -910,7 +910,13 @@ mod tests {
             .multimedia
             .first()
             .expect("the portrait becomes GEDCOM multimedia");
-        assert_eq!(portrait.file.as_ref().and_then(|file| file.value.as_deref()), Some("p.jpg"));
+        assert_eq!(
+            portrait
+                .file
+                .as_ref()
+                .and_then(|file| file.value.as_deref()),
+            Some("p.jpg")
+        );
         let tags: Vec<_> = data.individuals[0]
             .custom_data
             .iter()
