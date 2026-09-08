@@ -762,6 +762,7 @@ fn attribute(kind: IndividualAttribute, value: &str) -> AttributeDetail {
         address: None,
         cause: None,
         agency: None,
+        multimedia: Vec::new(),
     }
 }
 
@@ -905,6 +906,11 @@ mod tests {
     #[test]
     fn geneweb_only_concepts_ride_on_custom_tags() {
         let data = convert("fam Dupont Jean.2 #image p.jpg #apriv 1900 + A B\n");
+        let portrait = data.individuals[0]
+            .multimedia
+            .first()
+            .expect("the portrait becomes GEDCOM multimedia");
+        assert_eq!(portrait.file.as_ref().and_then(|file| file.value.as_deref()), Some("p.jpg"));
         let tags: Vec<_> = data.individuals[0]
             .custom_data
             .iter()

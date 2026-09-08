@@ -122,6 +122,31 @@ fn person_and_family_counts_match_gwc() {
     assert_eq!(db.persons.len(), 35, "person count");
 }
 
+#[test]
+fn gallery_page_keeps_its_media_reference() {
+    let db = geneweb::database::GwDatabase::read(GALICHET, "galichet.gw").expect("parses");
+    let gallery = db
+        .pages
+        .iter()
+        .find(|page| page.name == "Gallery")
+        .expect("the Gallery extended page");
+    assert!(gallery.text.contains("\"img\": \"jean_pierre.0.galichet.jpg\""));
+
+    let data = db.to_gedcom();
+    let page = data
+        .custom_data
+        .iter()
+        .find(|tag| tag.tag == "_GWPAGE" && tag.value.as_deref() == Some("Gallery"))
+        .expect("the Gallery GEDCOM extension");
+    assert!(page.children.iter().any(|child| {
+        child.tag == "NOTE"
+            && child
+                .value
+                .as_deref()
+                .is_some_and(|value| value.contains("jean_pierre.0.galichet.jpg"))
+    }));
+}
+
 /// Reading a `.gw` and writing GEDCOM, then reading that GEDCOM back with `ged_io`.
 ///
 /// This is the whole point of the crate: what comes out must be a file the wider GEDCOM
