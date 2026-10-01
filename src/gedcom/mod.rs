@@ -42,8 +42,8 @@ use ged_io::types::place::Place;
 use ged_io::types::source::citation::{Citation, CitationSource};
 use ged_io::types::{family::Family as GedFamily, GedcomData};
 
-use crate::database::{FamilyId, FamilyRecord, GwDatabase, PersonId};
-use crate::model::event::{Event as GwEvent, FamilyEventName as F, Witness, WitnessKind};
+use crate::database::{FamilyId, FamilyRecord, GwDatabase, PersonId, ResolvedWitness};
+use crate::model::event::{Event as GwEvent, FamilyEventName as F, WitnessKind};
 use crate::model::family::{Divorce, RelationKind};
 use crate::model::person::{Access, Burial, Death, DeathReason, Person, Sex};
 use crate::model::relation::RelationType;
@@ -319,7 +319,7 @@ impl GwDatabase {
         individual.sex = gender(person.sex);
         individual.note = note(&person.notes);
         individual.source = citations(&person.sources);
-        individual.events = self.life_events(person);
+        individual.events = self.life_events(id, person);
         individual.attributes = attributes(person);
         // Only the `rel` relations go on the individual. Witnesses of `pevt` events stay
         // nested in the event they attended (see `event_detail`), as GeneWeb's own
@@ -357,7 +357,7 @@ impl GwDatabase {
     /// A `pevt` block may restate an event the person's own line already carries. The
     /// `gwplus` rule is that the structured event wins, so a life event that also appears
     /// in the block is emitted once, from the block.
-    fn life_events(&self, person: &Person) -> Vec<Detail> {
+    fn life_events(&self, id: PersonId, person: &Person) -> Vec<Detail> {
         use crate::model::event::PersonEventName as P;
         use ged_io::types::event::Event as E;
         let mut events = Vec::new();
@@ -418,9 +418,15 @@ impl GwDatabase {
             events.push(d);
         }
 
-        for gw_event in &person.events {
+        for (i, gw_event) in person.events.iter().enumerate() {
             let mapping = event::person_event(&gw_event.name);
-            events.push(self.event_detail(gw_event, mapping, &gw_event.name.tag()));
+            let witnesses = self.person_event_witnesses(id, i);
+            events.push(Self::event_detail(
+                gw_event,
+                mapping,
+                &gw_event.name.tag(),
+                witnesses,
+            ));
         }
 
         events
@@ -428,10 +434,10 @@ impl GwDatabase {
 
     /// Shapes a `gwplus` event, personal or familial, into a GEDCOM event detail.
     fn event_detail<N>(
-        &self,
         gw_event: &GwEvent<N>,
         mapping: event::EventMapping,
         original_tag: &str,
+        witnesses: &[ResolvedWitness],
     ) -> Detail {
         let mut d = detail(mapping.event.clone());
         d.event_type = mapping.event_type;
@@ -440,30 +446,13 @@ impl GwDatabase {
         d.note = note(&gw_event.note);
         d.citations = citations(&gw_event.source);
         d.cause = (!gw_event.cause.is_empty()).then(|| gw_event.cause.clone());
-        d.associations = self.witness_associations(&gw_event.witnesses);
+        d.associations = witness_associations(witnesses);
         // An event that became a generic `EVEN` has lost which `.gw` tag it came from.
         // Recording the tag keeps the mapping reversible.
         if d.event_type.is_some() {
             d.custom_data_push(TAG_EVENT, original_tag);
         }
         d
-    }
-
-    /// Turns event witnesses into GEDCOM associations pointing at the witness.
-    fn witness_associations(&self, witnesses: &[Witness]) -> Vec<Association> {
-        witnesses
-            .iter()
-            .filter_map(|w| {
-                let id = self.lookup(&w.person.key())?;
-                Some(Association {
-                    xref: individual_xref(id),
-                    relationship: Some(event::witness_relationship(w.kind).to_owned()),
-                    association_type: Some("INDI".to_owned()),
-                    note: None,
-                    custom_data: Vec::new(),
-                })
-            })
-            .collect()
     }
 
     /// The relations of a `rel` block, as GEDCOM associations.
@@ -546,10 +535,15 @@ impl GwDatabase {
             out.events.push(d);
         }
 
-        for gw_event in &family.events {
+        for (i, gw_event) in family.events.iter().enumerate() {
             let mapping = event::family_event(&gw_event.name);
-            out.events
-                .push(self.event_detail(gw_event, mapping, &gw_event.name.tag()));
+            let witnesses = self.family_event_witnesses(id, i);
+            out.events.push(Self::event_detail(
+                gw_event,
+                mapping,
+                &gw_event.name.tag(),
+                witnesses,
+            ));
         }
 
         if let Some(label) = relation_kind_label(family.relation) {
@@ -620,9 +614,14 @@ fn names(person: &Person) -> Vec<Name> {
     names
 }
 
+/// The witnesses of a family line, as GEDCOM associations.
 fn family_witness_associations(family: &FamilyRecord) -> Vec<Association> {
-    family
-        .witnesses
+    witness_associations(&family.witnesses)
+}
+
+/// Turns resolved witnesses into GEDCOM associations pointing at each witness.
+fn witness_associations(witnesses: &[ResolvedWitness]) -> Vec<Association> {
+    witnesses
         .iter()
         .map(|w| Association {
             xref: individual_xref(w.person),
@@ -973,6 +972,27 @@ mod tests {
             divorce.date.as_ref().unwrap().value.as_deref(),
             Some("1860")
         );
+    }
+
+    #[test]
+    fn witnesses_known_only_from_their_event_are_kept() {
+        let data = convert(concat!(
+            "fam Doe John + Roe Jane\n",
+            "fevt\n#marr 1925\nwit m: Poe Paul\nend fevt\n",
+            "pevt Doe John\n#deat 1970\nwit m: Moe Mark 1850\nend pevt\n",
+        ));
+        let marriage = &data.families[0].events[0];
+        assert_eq!(marriage.associations.len(), 1);
+        assert_eq!(marriage.associations[0].xref, "@I3@");
+        let death = data.individuals[0]
+            .events
+            .iter()
+            .find(|e| e.event == E::Death)
+            .expect("a death");
+        assert_eq!(death.associations.len(), 1);
+        assert_eq!(death.associations[0].xref, "@I4@");
+        // The witnesses are individuals of the file.
+        assert_eq!(data.individuals.len(), 4);
     }
 
     #[test]

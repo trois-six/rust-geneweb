@@ -95,6 +95,11 @@ pub struct GwDatabase {
     /// Whether the file declared `gwplus`.
     pub gwplus: bool,
     index: HashMap<Key, PersonId>,
+    /// The witnesses of each person's `pevt` events, resolved, per event.
+    person_event_witnesses: HashMap<PersonId, Vec<Vec<ResolvedWitness>>>,
+    /// The witnesses of each family's `fevt` events, resolved, per event; parallel to
+    /// `families`.
+    family_event_witnesses: Vec<Vec<Vec<ResolvedWitness>>>,
 }
 
 /// Copies `new` over `existing` wherever `existing` has nothing.
@@ -211,6 +216,30 @@ impl GwDatabase {
         Ok(db)
     }
 
+    /// The witnesses of a person's `pevt` event, by the event's position in
+    /// [`Person::events`], with every person resolved to an index.
+    ///
+    /// Empty for an event without witnesses or a position out of range.
+    #[must_use]
+    pub fn person_event_witnesses(&self, person: PersonId, event: usize) -> &[ResolvedWitness] {
+        self.person_event_witnesses
+            .get(&person)
+            .and_then(|events| events.get(event))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The witnesses of a family's `fevt` event, by the event's position in
+    /// [`FamilyRecord::events`], with every person resolved to an index.
+    ///
+    /// Empty for an event without witnesses or a position out of range.
+    #[must_use]
+    pub fn family_event_witnesses(&self, family: FamilyId, event: usize) -> &[ResolvedWitness] {
+        self.family_event_witnesses
+            .get(family)
+            .and_then(|events| events.get(event))
+            .map_or(&[], Vec::as_slice)
+    }
+
     /// The person a key names, if the file defines or mentions one.
     #[must_use]
     pub fn lookup(&self, key: &Key) -> Option<PersonId> {
@@ -267,6 +296,20 @@ impl GwDatabase {
             .collect()
     }
 
+    /// Resolves the witnesses of `gwplus` events, interning each of them as the
+    /// witnesses of a family line are: a witness defined inline becomes a person, one
+    /// only referenced gets a stub, and a `? ?` is a person of their own. The syntax
+    /// tree keeps its witnesses as written.
+    fn intern_event_witnesses<'a, N: 'a>(
+        &mut self,
+        events: impl IntoIterator<Item = &'a crate::model::event::Event<N>>,
+    ) -> Vec<Vec<ResolvedWitness>> {
+        events
+            .into_iter()
+            .map(|event| self.intern_witnesses(event.witnesses.clone()))
+            .collect()
+    }
+
     fn set_sex(&mut self, id: PersonId, sex: Sex) {
         if sex != Sex::Neuter && self.persons[id].sex == Sex::Neuter {
             self.persons[id].sex = sex;
@@ -282,6 +325,7 @@ impl GwDatabase {
                 self.set_sex(father, family.father_sex);
                 self.set_sex(mother, family.mother_sex);
                 let witnesses = self.intern_witnesses(family.witnesses);
+                let event_witnesses = self.intern_event_witnesses(&family.events);
                 let children = family
                     .children
                     .into_iter()
@@ -303,6 +347,7 @@ impl GwDatabase {
                     children,
                     origin_file: family.origin_file,
                 });
+                self.family_event_witnesses.push(event_witnesses);
             }
             GwBlock::PersonNotes { key, text } => {
                 let id = self.intern_key(key);
@@ -328,7 +373,9 @@ impl GwDatabase {
             }
             GwBlock::PersonEvents { person, events, .. } => {
                 let id = self.intern(person);
+                let witnesses = self.intern_event_witnesses(&events);
                 self.persons[id].events = events;
+                self.person_event_witnesses.insert(id, witnesses);
             }
             GwBlock::DatabaseNotes { page, text } => {
                 self.pages.push(Page { name: page, text });
@@ -425,6 +472,39 @@ mod tests {
         assert!(db.lookup(&Key::new("Paul", "Martin", 0)).is_some());
         let jean = db.lookup(&Key::new("Jean", "Dupont", 0)).expect("Jean");
         assert_eq!(db.persons[jean].relations.len(), 1);
+    }
+
+    #[test]
+    fn event_witnesses_are_interned_like_family_witnesses() {
+        let db = db(concat!(
+            "fam Doe John + Roe Jane\n",
+            "fevt\n#marr 1925\nwit m: Poe Paul\nend fevt\n",
+            "pevt Doe John\n",
+            "#deat 1970\n",
+            "wit m: Moe Mark 1850\n",
+            "wit f: ? ?\n",
+            "end pevt\n",
+        ));
+        // John, Jane, Paul (referenced only), Mark (defined inline) and the anonymous
+        // witness.
+        assert_eq!(db.persons.len(), 5);
+
+        let paul = db.lookup(&Key::new("Paul", "Poe", 0)).expect("Paul");
+        let marriage_witnesses = db.family_event_witnesses(0, 0);
+        assert_eq!(marriage_witnesses.len(), 1);
+        assert_eq!(marriage_witnesses[0].person, paul);
+
+        let john = db.lookup(&Key::new("John", "Doe", 0)).expect("John");
+        let mark = db.lookup(&Key::new("Mark", "Moe", 0)).expect("Mark");
+        // The inline definition carried a birth date.
+        assert!(db.persons[mark].birth.is_some());
+        let death_witnesses = db.person_event_witnesses(john, 0);
+        assert_eq!(death_witnesses.len(), 2);
+        assert_eq!(death_witnesses[0].person, mark);
+        // The `? ?` witness is a person of their own, not dropped.
+        assert_eq!(db.persons[death_witnesses[1].person].first_name, "?");
+        // The syntax tree keeps the witnesses as written.
+        assert_eq!(db.persons[john].events[0].witnesses.len(), 2);
     }
 
     #[test]
