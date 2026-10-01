@@ -246,19 +246,50 @@ fn relation_type_label(relation: RelationType) -> &'static str {
     }
 }
 
-/// Renders a title as the free text GEDCOM's `TITL` attribute expects.
+/// Renders a title as the free text GEDCOM's `TITL` attribute expects, as `gwb2ged`
+/// writes it: `ident, place, nth`.
+///
+/// The place of a title is the domain it is held over (`de France`, `d'Anvers`), part of
+/// its name, not a locality: it stays in the text and is not a `PLAC`.
 fn title_value(title: &Title) -> String {
     let mut out = title.ident.clone();
     if !title.place.is_empty() {
-        let _ = write!(out, " {}", title.place);
+        let _ = write!(out, ", {}", title.place);
     }
     if title.nth != 0 {
-        let _ = write!(out, " {}", title.nth);
-    }
-    if let TitleName::Name(name) = &title.name {
-        let _ = write!(out, " ({name})");
+        let _ = write!(out, ", {}", title.nth);
     }
     out
+}
+
+/// The period a title was held, as `gwb2ged` writes it: `FROM start TO end`, either end
+/// possibly missing.
+fn title_period(title: &Title) -> Option<ged_io::types::date::Date> {
+    let bound = |d: &Option<crate::date::GwDate>| {
+        d.as_ref()
+            .and_then(|d| date::to_gedcom(d).value)
+            .filter(|v| !v.is_empty())
+    };
+    let value = match (bound(&title.date_start), bound(&title.date_end)) {
+        (None, None) => return None,
+        (Some(start), None) => format!("FROM {start}"),
+        (None, Some(end)) => format!("TO {end}"),
+        (Some(start), Some(end)) => format!("FROM {start} TO {end}"),
+    };
+    Some(ged_io::types::date::Date {
+        value: Some(value),
+        ..ged_io::types::date::Date::default()
+    })
+}
+
+/// The name a title is held under, as `gwb2ged` notes it: the person's public name for
+/// the main title, or the name given in the title.
+fn title_holder<'a>(title: &'a Title, person: &'a Person) -> &'a str {
+    match &title.name {
+        TitleName::Main => &person.public_name,
+        TitleName::Name(name) => name,
+        TitleName::None => "",
+    }
 }
 
 // Some of these read no database state today, but they are part of one conversion
@@ -741,8 +772,8 @@ fn attributes(person: &Person) -> Vec<AttributeDetail> {
     }
     for title in &person.titles {
         let mut a = attribute(IndividualAttribute::NobilityTypeTitle, &title_value(title));
-        a.date = title.date_start.as_ref().map(date::to_gedcom);
-        a.place = place(&title.place);
+        a.date = title_period(title);
+        a.note = note(title_holder(title, person));
         out.push(a);
     }
     out
@@ -900,7 +931,39 @@ mod tests {
         assert!(attrs
             .iter()
             .any(|a| a.attribute == IndividualAttribute::NobilityTypeTitle
-                && a.value.as_deref() == Some("duc Bretagne")));
+                && a.value.as_deref() == Some("duc, Bretagne")));
+    }
+
+    #[test]
+    fn titles_are_written_as_gwb2ged_writes_them() {
+        let data = convert(concat!(
+            "fam Doe John [Samplename:Count:Sampleshire:1800:1810:2] ",
+            "[:Baron:Sampleton:::] + A B\n",
+        ));
+        let titles: Vec<_> = data.individuals[0]
+            .attributes
+            .iter()
+            .filter(|a| a.attribute == IndividualAttribute::NobilityTypeTitle)
+            .collect();
+        assert_eq!(titles.len(), 2);
+
+        let count = titles[0];
+        assert_eq!(count.value.as_deref(), Some("Count, Sampleshire, 2"));
+        // The domain is part of the title, not a place.
+        assert!(count.place.is_none());
+        // Both ends of the period are kept.
+        assert_eq!(
+            count.date.as_ref().and_then(|d| d.value.as_deref()),
+            Some("FROM 1800 TO 1810")
+        );
+        assert_eq!(
+            count.note.as_ref().and_then(|n| n.value.as_deref()),
+            Some("Samplename")
+        );
+
+        let baron = titles[1];
+        assert_eq!(baron.value.as_deref(), Some("Baron, Sampleton"));
+        assert!(baron.date.is_none() && baron.note.is_none() && baron.place.is_none());
     }
 
     #[test]
