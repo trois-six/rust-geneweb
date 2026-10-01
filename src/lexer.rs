@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(fields("Jean_Pierre"), vec!["Jean Pierre"]);
         assert_eq!(fields("a b\tc"), vec!["a", "b", "c"]);
         assert_eq!(fields("  a   b  "), vec!["a", "b"]);
-        assert!(fields("").is_empty());
+        assert_eq!(fields("").len(), 0);
     }
 
     #[test]

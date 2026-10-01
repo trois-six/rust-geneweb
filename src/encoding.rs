@@ -87,7 +87,7 @@ mod tests {
         assert_eq!(split_lines(b"a\nb\n"), vec![&b"a"[..], &b"b"[..]]);
         assert_eq!(split_lines(b"a\r\nb"), vec![&b"a"[..], &b"b"[..]]);
         assert_eq!(split_lines(b"\xEF\xBB\xBFa\n"), vec![&b"a"[..]]);
-        assert!(split_lines(b"").is_empty());
+        assert_eq!(split_lines(b"").len(), 0);
     }
 
     #[test]

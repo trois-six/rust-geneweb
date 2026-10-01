@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn an_empty_file_yields_nothing() {
-        assert!(blocks("").is_empty());
-        assert!(blocks("\n\n# just comments\n").is_empty());
+        assert_eq!(blocks("").len(), 0);
+        assert_eq!(blocks("\n\n# just comments\n").len(), 0);
     }
 }

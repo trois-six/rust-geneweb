@@ -247,7 +247,7 @@ mod tests {
         assert_eq!(witness_relationship(WitnessKind::Witness), "Witness");
         for tag in WitnessKind::TAGS {
             let kind = WitnessKind::from_tag(tag).unwrap();
-            assert!(!witness_relationship(kind).is_empty());
+            assert_ne!(witness_relationship(kind).len(), 0);
         }
     }
 }
