@@ -9,7 +9,7 @@
 //! | GeneWeb concept | GEDCOM |
 //! |---|---|
 //! | Person key occurrence number | `_GWOCC` |
-//! | Access rights (`#apubl`, `#apriv`, `#semipub`) | `_GWACCESS` |
+//! | Access rights (`#apubl`, `#apriv`, `#semipub`) | `_GWACCESS`, plus `RESN confidential` for a restricted person |
 //! | Portrait path (`#image`) | `_GWIMAGE` |
 //! | Death reason (killed, murdered, executed, disappeared) | `_GWDEATH` on the death event |
 //! | Union kind with no GEDCOM event (`#pacs`, `#noment`, …) | `_GWRELKIND` |
@@ -346,6 +346,11 @@ impl GwDatabase {
             individual
                 .custom_data
                 .push(Box::new(custom(TAG_ACCESS, label)));
+        }
+        // What GEDCOM itself can say about it: a person hidden from the public is
+        // `RESN confidential`. `_GWACCESS` keeps the exact GeneWeb setting.
+        if matches!(person.access, Access::Private | Access::SemiPublic) {
+            individual.restriction = Some("confidential".to_owned());
         }
         if !person.image.is_empty() {
             individual
@@ -840,6 +845,19 @@ mod tests {
             data.individuals[2].families[0].family_link_type,
             FamilyLinkType::Child
         );
+    }
+
+    #[test]
+    fn access_restrictions_are_also_a_resn() {
+        let data = convert(concat!(
+            "fam Doe John #apriv + Roe Jane #semipub\n",
+            "fam Poe Paul #apubl + Moe Mary\n",
+        ));
+        let restriction = |i: usize| data.individuals[i].restriction.as_deref();
+        assert_eq!(restriction(0), Some("confidential"));
+        assert_eq!(restriction(1), Some("confidential"));
+        assert_eq!(restriction(2), None);
+        assert_eq!(restriction(3), None);
     }
 
     #[test]
