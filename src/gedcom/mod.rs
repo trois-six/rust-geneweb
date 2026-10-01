@@ -402,7 +402,17 @@ impl GwDatabase {
 
         if let Some(mut d) = death_event(&person.death).filter(|_| !death_superseded) {
             d.place = place(&person.death_place);
-            d.note = note(&person.death_note);
+            // The death reason already rides on the note; the person's own note on the
+            // death comes first, the reason stays after it.
+            d.note = match (note(&person.death_note), d.note.take()) {
+                (Some(mut text), Some(reason)) => {
+                    let value = text.value.get_or_insert_with(String::new);
+                    value.push('\n');
+                    value.push_str(reason.value.as_deref().unwrap_or_default());
+                    Some(text)
+                }
+                (text, reason) => text.or(reason),
+            };
             d.citations = citations(&person.death_src);
             events.push(d);
         }
@@ -425,6 +435,16 @@ impl GwDatabase {
         for gw_event in &person.events {
             let mapping = event::person_event(&gw_event.name);
             events.push(self.event_detail(gw_event, mapping, &gw_event.name.tag()));
+        }
+
+        // A `pevt` death supersedes the death on the person's line, but `#deat` has no
+        // way to say how the person died: the line's reason goes on the `pevt` death.
+        if death_superseded {
+            if let Some(reason) = death_reason(&person.death) {
+                if let Some(d) = events.iter_mut().find(|d| d.event == E::Death) {
+                    d.custom_data_push(TAG_DEATH_REASON, reason);
+                }
+            }
         }
 
         events
@@ -672,26 +692,28 @@ fn death_event(death: &Death) -> Option<Detail> {
     match death {
         // Nothing to record: alive, or simply unknown.
         Death::NotDead | Death::DontKnowIfDead => return None,
-        Death::Dead { reason, date } => {
-            d.date = Some(date::to_gedcom(date));
-            if let Some(label) = death_reason_label(*reason) {
-                d.custom_data_push(TAG_DEATH_REASON, label);
-            }
-        }
+        Death::Dead { date, .. } => d.date = Some(date::to_gedcom(date)),
         // `1 DEAT Y` is the GEDCOM idiom for a death with no details. The nuance
         // GeneWeb draws between these three goes in the note, since GEDCOM has no
         // vocabulary for it.
-        Death::DeadDontKnowWhen => d.value = Some("Y".to_owned()),
-        Death::DeadYoung => {
+        Death::DeadDontKnowWhen | Death::DeadYoung | Death::OfCourseDead => {
             d.value = Some("Y".to_owned());
-            d.custom_data_push(TAG_DEATH_REASON, "died young");
-        }
-        Death::OfCourseDead => {
-            d.value = Some("Y".to_owned());
-            d.custom_data_push(TAG_DEATH_REASON, "presumed dead");
         }
     }
+    if let Some(reason) = death_reason(death) {
+        d.custom_data_push(TAG_DEATH_REASON, reason);
+    }
     Some(d)
+}
+
+/// How a person died, or what GeneWeb knows of it, when GEDCOM has no word for it.
+fn death_reason(death: &Death) -> Option<&'static str> {
+    match death {
+        Death::Dead { reason, .. } => death_reason_label(*reason),
+        Death::DeadYoung => Some("died young"),
+        Death::OfCourseDead => Some("presumed dead"),
+        Death::NotDead | Death::DontKnowIfDead | Death::DeadDontKnowWhen => None,
+    }
 }
 
 /// A multimedia object pointing at a portrait file.
@@ -925,6 +947,43 @@ mod tests {
         assert!(tags.contains(&(TAG_OCCURRENCE, Some("2"))));
         assert!(tags.contains(&(TAG_ACCESS, Some("private"))));
         assert!(tags.contains(&(TAG_IMAGE, Some("p.jpg"))));
+    }
+
+    #[test]
+    fn the_death_reason_survives_a_death_note() {
+        let data = convert("fam Doe John k1900 + Roe Jane\n");
+        let death = |data: &GedcomData| {
+            data.individuals[0]
+                .events
+                .iter()
+                .find(|e| e.event == E::Death)
+                .and_then(|d| d.note.as_ref())
+                .and_then(|n| n.value.clone())
+        };
+        assert_eq!(death(&data).as_deref(), Some("_GWDEATH killed"));
+
+        // A death with its own note keeps both.
+        let mut db = GwDatabase::read(b"fam Doe John k1900 + Roe Jane\n", "t.gw").expect("parses");
+        db.persons[0].death_note = "Fell at the front".to_owned();
+        assert_eq!(
+            death(&db.to_gedcom()).as_deref(),
+            Some("Fell at the front\n_GWDEATH killed")
+        );
+    }
+
+    #[test]
+    fn the_death_reason_survives_a_pevt_death() {
+        let data = convert("fam Doe John k1900 + Roe Jane\npevt Doe John\n#deat 1900\nend pevt\n");
+        let deaths: Vec<_> = data.individuals[0]
+            .events
+            .iter()
+            .filter(|e| e.event == E::Death)
+            .collect();
+        assert_eq!(deaths.len(), 1);
+        assert_eq!(
+            deaths[0].note.as_ref().and_then(|n| n.value.as_deref()),
+            Some("_GWDEATH killed")
+        );
     }
 
     #[test]
