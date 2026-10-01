@@ -741,9 +741,21 @@ fn names(person: &Person) -> Vec<Name> {
         None,
     )];
 
-    // A nickname belongs on the primary name.
-    if let Some(nickname) = person.qualifiers.first() {
+    // A nickname belongs on the primary name. GEDCOM gives a name one `NICK`, so each
+    // further nickname rides on a name of its own rather than being dropped.
+    let mut nicknames = person.qualifiers.iter();
+    if let Some(nickname) = nicknames.next() {
         names[0].nickname = Some(nickname.clone());
+    }
+    for nickname in nicknames {
+        let mut name = name_record(
+            gedcom_name(&person.first_name, &person.surname),
+            &person.first_name,
+            &person.surname,
+            Some(NameType::Aka),
+        );
+        name.nickname = Some(nickname.clone());
+        names.push(name);
     }
 
     if !person.public_name.is_empty() {
@@ -1013,6 +1025,22 @@ mod tests {
         assert!(values.contains(&"Le Grand /Dupont/"));
         assert!(values.contains(&"Jeannot /Dupont/"));
         assert!(values.contains(&"Jean /Dupond/"));
+    }
+
+    #[test]
+    fn every_nickname_is_kept() {
+        let data = convert("fam Doe John #nick Johnny #nick Jacko + Roe Jane\n");
+        let names = &data.individuals[0].names;
+        assert_eq!(names[0].nickname.as_deref(), Some("Johnny"));
+        let second = names
+            .iter()
+            .find(|n| n.nickname.as_deref() == Some("Jacko"))
+            .expect("the second nickname");
+        assert_eq!(second.value.as_deref(), Some("John /Doe/"));
+        assert_eq!(
+            second.name_type,
+            Some(ged_io::types::individual::name::NameType::Aka)
+        );
     }
 
     #[test]
