@@ -19,7 +19,9 @@
 //!
 //! Everything else maps onto standard GEDCOM: names and their aliases, sex, the four
 //! life events, `gwplus` events with their witnesses, occupations, titles, sources,
-//! notes, family links and the relations of a `rel` block.
+//! notes, family links and the relations of a `rel` block: adoptive and foster parents
+//! as a family of their own (`FAMC` with `PEDI`, and an `ADOP` event for an adoption), the
+//! other relations as `ASSO`.
 
 pub mod date;
 pub mod event;
@@ -33,6 +35,8 @@ use ged_io::types::header::Header;
 use ged_io::types::individual::association::Association;
 use ged_io::types::individual::attribute::detail::AttributeDetail;
 use ged_io::types::individual::attribute::IndividualAttribute;
+use ged_io::types::individual::family_link::adopted::AdoptedByWhichParent;
+use ged_io::types::individual::family_link::pedigree::Pedigree;
 use ged_io::types::individual::family_link::{FamilyLink, FamilyLinkType};
 use ged_io::types::individual::gender::{Gender, GenderType};
 use ged_io::types::individual::name::Name;
@@ -236,6 +240,29 @@ fn relation_kind_label(kind: RelationKind) -> Option<&'static str> {
     }
 }
 
+/// A family a `rel` block implies: a child with their adoptive or foster parents.
+struct ImpliedFamily<'a> {
+    child: PersonId,
+    father: Option<PersonId>,
+    mother: Option<PersonId>,
+    pedigree: Pedigree,
+    sources: &'a str,
+}
+
+/// The `ADOP` event of an adopted child, pointing at the adoptive family and saying
+/// which of its parents adopted.
+fn adoption_event(family_xref: &str, family: &ImpliedFamily<'_>) -> Detail {
+    let mut link = family_link(family_xref, FamilyLinkType::Child);
+    link.adopted_by = Some(match (family.father, family.mother) {
+        (Some(_), Some(_)) => AdoptedByWhichParent::Both,
+        (Some(_), None) => AdoptedByWhichParent::Husband,
+        _ => AdoptedByWhichParent::Wife,
+    });
+    let mut d = detail(ged_io::types::event::Event::Adoption);
+    d.family_link = Some(link);
+    d
+}
+
 fn relation_type_label(relation: RelationType) -> &'static str {
     match relation {
         RelationType::Adoption => "adoptive parent",
@@ -320,12 +347,41 @@ impl GwDatabase {
             }
         }
 
+        // Adoptive and foster parents named in `rel` blocks form families of their own,
+        // numbered after the file's.
+        let implied = self.implied_families();
+        for (i, family) in implied.iter().enumerate() {
+            let xref = family_xref(self.families.len() + i);
+            for parent in [family.father, family.mother].into_iter().flatten() {
+                links[parent].push(family_link(&xref, FamilyLinkType::Spouse));
+            }
+            let mut link = family_link(&xref, FamilyLinkType::Child);
+            link.pedigree_linkage_type = Some(family.pedigree.clone());
+            links[family.child].push(link);
+        }
+
         for (id, person) in self.persons.iter().enumerate() {
             data.individuals
                 .push(self.individual(id, person, std::mem::take(&mut links[id])));
         }
         for (id, family) in self.families.iter().enumerate() {
             data.families.push(self.family(id, family));
+        }
+        for (i, family) in implied.iter().enumerate() {
+            let xref = family_xref(self.families.len() + i);
+            if family.pedigree == Pedigree::Adopted {
+                data.individuals[family.child]
+                    .events
+                    .push(adoption_event(&xref, family));
+            }
+            data.families.push(GedFamily {
+                xref: Some(xref),
+                individual1: family.father.map(individual_xref),
+                individual2: family.mother.map(individual_xref),
+                children: vec![individual_xref(family.child)],
+                sources: citations(family.sources),
+                ..GedFamily::default()
+            });
         }
 
         for page in &self.pages {
@@ -508,13 +564,24 @@ impl GwDatabase {
 
     /// The relations of a `rel` block, as GEDCOM associations.
     fn associations(&self, person: &Person) -> Vec<Association> {
+        // Only the relations GEDCOM has no structure for: adoptive and foster parents
+        // become a family of their own (see `implied_families`). Godparents are labelled
+        // as `gwb2ged` labels them, `GODF` and `GODM`.
         let mut out = Vec::new();
         for relation in &person.relations {
-            let label = relation_type_label(relation.relation_type);
-            for who in [relation.father.as_ref(), relation.mother.as_ref()]
-                .into_iter()
-                .flatten()
-            {
+            if matches!(
+                relation.relation_type,
+                RelationType::Adoption | RelationType::FosterParent
+            ) {
+                continue;
+            }
+            for (who, slot) in [(relation.father.as_ref(), 0), (relation.mother.as_ref(), 1)] {
+                let Some(who) = who else { continue };
+                let label = match (relation.relation_type, slot) {
+                    (RelationType::GodParent, 0) => "GODF",
+                    (RelationType::GodParent, _) => "GODM",
+                    (other, _) => relation_type_label(other),
+                };
                 if let Some(id) = self.lookup(&who.key()) {
                     out.push(Association {
                         xref: individual_xref(id),
@@ -522,6 +589,35 @@ impl GwDatabase {
                         association_type: Some("INDI".to_owned()),
                         note: None,
                         custom_data: Vec::new(),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// The adoptive and foster families the `rel` blocks imply: one per relation that
+    /// names at least one parent the file knows.
+    fn implied_families(&self) -> Vec<ImpliedFamily<'_>> {
+        let mut out = Vec::new();
+        for (child, person) in self.persons.iter().enumerate() {
+            for relation in &person.relations {
+                let pedigree = match relation.relation_type {
+                    RelationType::Adoption => Pedigree::Adopted,
+                    RelationType::FosterParent => Pedigree::Foster,
+                    _ => continue,
+                };
+                let resolve = |who: &Option<crate::model::key::Somebody>| {
+                    who.as_ref().and_then(|w| self.lookup(&w.key()))
+                };
+                let (father, mother) = (resolve(&relation.father), resolve(&relation.mother));
+                if father.is_some() || mother.is_some() {
+                    out.push(ImpliedFamily {
+                        child,
+                        father,
+                        mother,
+                        pedigree,
+                        sources: &relation.sources,
                     });
                 }
             }
@@ -1192,12 +1288,80 @@ mod tests {
     }
 
     #[test]
-    fn relations_become_associations() {
-        let data =
-            convert("fam Dupont Jean + A B\nrel Dupont Jean\nbeg\n- adop fath: Martin Paul\nend\n");
-        let assoc = &data.individuals[0].associations;
-        assert_eq!(assoc.len(), 1);
-        assert_eq!(assoc[0].relationship.as_deref(), Some("adoptive parent"));
+    fn relations_without_a_gedcom_structure_become_associations() {
+        let data = convert(concat!(
+            "fam Dupont Jean + A B\n",
+            "rel Dupont Jean\nbeg\n",
+            "- reco fath: Martin Paul\n",
+            "- godp: Durand Luc + Durand Anne\n",
+            "end\n",
+        ));
+        let labels: Vec<_> = data.individuals[0]
+            .associations
+            .iter()
+            .map(|a| a.relationship.as_deref().unwrap_or_default())
+            .collect();
+        // Godparents are labelled as gwb2ged labels them.
+        assert_eq!(labels, ["recognising parent", "GODF", "GODM"]);
+    }
+
+    #[test]
+    fn an_adoption_becomes_an_adoptive_family() {
+        use ged_io::types::individual::family_link::adopted::AdoptedByWhichParent;
+        use ged_io::types::individual::family_link::pedigree::Pedigree;
+
+        let data = convert(concat!(
+            "fam Doe John + Roe Jane\nbeg\n- h Paul 1930\nend\n",
+            "rel Doe Paul\nbeg\n- adop fath: Poe Peter\nend\n",
+        ));
+        // Not an association: nothing to mistake for a witness.
+        assert!(data.individuals.iter().all(|i| i.associations.is_empty()));
+
+        let adoptive = &data.families[1];
+        assert_eq!(adoptive.xref.as_deref(), Some("@F2@"));
+        assert_eq!(adoptive.individual1.as_deref(), Some("@I4@"));
+        assert_eq!(adoptive.individual2, None);
+        assert_eq!(adoptive.children, ["@I3@"]);
+
+        let paul = &data.individuals[2];
+        let link = paul
+            .families
+            .iter()
+            .find(|l| l.xref == "@F2@")
+            .expect("a link to the adoptive family");
+        assert_eq!(link.pedigree_linkage_type, Some(Pedigree::Adopted));
+        let adop = paul
+            .events
+            .iter()
+            .find(|e| e.event == E::Adoption)
+            .expect("an adoption event");
+        let adop_link = adop.family_link.as_ref().expect("its family");
+        assert_eq!(adop_link.xref, "@F2@");
+        assert_eq!(adop_link.adopted_by, Some(AdoptedByWhichParent::Husband));
+        // The adoptive father is a spouse of that family.
+        assert!(data.individuals[3]
+            .families
+            .iter()
+            .any(|l| l.xref == "@F2@"));
+    }
+
+    #[test]
+    fn foster_parents_become_a_foster_family() {
+        use ged_io::types::individual::family_link::pedigree::Pedigree;
+
+        let data = convert(concat!(
+            "fam Doe John + Roe Jane\nbeg\n- h Paul 1930\nend\n",
+            "rel Doe Paul\nbeg\n- fost: Poe Peter + Poe Mary\nend\n",
+        ));
+        let foster = &data.families[1];
+        assert!(foster.individual1.is_some() && foster.individual2.is_some());
+        let paul = &data.individuals[2];
+        assert!(paul
+            .families
+            .iter()
+            .any(|l| l.xref == "@F2@" && l.pedigree_linkage_type == Some(Pedigree::Foster)));
+        // Fostering is no adoption.
+        assert!(paul.events.iter().all(|e| e.event != E::Adoption));
     }
 
     #[test]
