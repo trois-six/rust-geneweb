@@ -321,16 +321,12 @@ impl GwDatabase {
         individual.source = citations(&person.sources);
         individual.events = self.life_events(person);
         individual.attributes = attributes(person);
+        // Only the `rel` relations go on the individual. Witnesses of `pevt` events stay
+        // nested in the event they attended (see `event_detail`), as GeneWeb's own
+        // `gwb2ged` writes them: a second, individual-level copy said nothing about which
+        // event it was, so a reader attaching it to some event of its own choosing turned
+        // a witness of a death into a witness of a baptism, next to the correct one.
         individual.associations = self.associations(person);
-        // Witnesses to a person's own events belong on the individual, not nested inside
-        // the event: GEDCOM 5.5.1 puts `ASSO` directly under `INDI`, and readers reject
-        // the nested form. Which event each witness attended is not expressible here; the
-        // `.gw` syntax tree keeps it.
-        for gw_event in &person.events {
-            individual
-                .associations
-                .extend(self.witness_associations(&gw_event.witnesses));
-        }
 
         // A portrait is a standard GEDCOM multimedia object, not just a custom tag.
         if !person.image.is_empty() {
@@ -790,6 +786,33 @@ mod tests {
         GwDatabase::read(input.as_bytes(), "t.gw")
             .expect("parses")
             .to_gedcom()
+    }
+
+    #[test]
+    fn event_witnesses_are_not_repeated_on_the_individual() {
+        let data = convert(concat!(
+            "fam Doe John + Roe Jane\n",
+            "pevt Doe John\n",
+            "#birt 1900\n",
+            "#deat 1970\n",
+            "wit m: Poe Paul\n",
+            "end pevt\n",
+            "fam Poe Paul + Moe Mary\n",
+        ));
+        let john = &data.individuals[0];
+        let death = john
+            .events
+            .iter()
+            .find(|e| e.event == E::Death)
+            .expect("a death");
+        assert_eq!(death.associations.len(), 1);
+        assert_eq!(death.associations[0].xref, "@I3@");
+        // The witness is stated once, on the event, and nowhere else.
+        assert_eq!(john.associations.len(), 0);
+        assert!(john
+            .events
+            .iter()
+            .all(|e| e.event == E::Death || e.associations.is_empty()));
     }
 
     #[test]
