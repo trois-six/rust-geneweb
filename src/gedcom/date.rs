@@ -116,10 +116,11 @@ pub fn to_gedcom(date: &GwDate) -> Date {
             out.value = Some(format_dmy(dmy, *calendar));
         }
         // GEDCOM 5.5.1 admits a parenthesised phrase where a date is expected, which is
-        // what GeneWeb emits. `phrase` carries the same text for GEDCOM 7 consumers.
+        // what GeneWeb emits. The conversion produces GEDCOM 5.5.1 throughout, so the
+        // text is not repeated in `phrase`, a GEDCOM 7.0 substructure: a writer would
+        // emit it as a `PHRASE` line that 5.5.1 does not define.
         GwDate::Text(text) => {
             out.value = Some(format!("({text})"));
-            out.phrase = Some(text.clone());
         }
     }
     out
@@ -189,7 +190,26 @@ mod tests {
         let date = parse("0(vers la Saint-Jean)").unwrap().unwrap();
         let out = to_gedcom(&date);
         assert_eq!(out.value.as_deref(), Some("(vers la Saint-Jean)"));
-        assert_eq!(out.phrase.as_deref(), Some("vers la Saint-Jean"));
+        // The 5.5.1 date phrase only: no GEDCOM 7.0 PHRASE beside it.
+        assert_eq!(out.phrase, None);
+    }
+
+    #[test]
+    fn a_text_date_is_written_as_gedcom_5_5_1() {
+        use ged_io::GedcomWriter;
+        let db = crate::database::GwDatabase::read(
+            b"fam Doe John 0(vers_la_Saint-Jean) + Roe Jane\n",
+            "t.gw",
+        )
+        .expect("parses");
+        let written = GedcomWriter::new()
+            .write_to_string(&db.to_gedcom())
+            .expect("writes");
+        assert!(
+            written.contains("2 DATE (vers la Saint-Jean)\n"),
+            "{written}"
+        );
+        assert!(!written.contains("PHRASE"), "{written}");
     }
 
     #[test]
