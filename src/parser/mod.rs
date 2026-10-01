@@ -139,6 +139,11 @@ impl<'a> LineReader<'a> {
         self.pos = self.pos.saturating_sub(1);
     }
 
+    /// Moves back to an earlier position, as returned by [`LineReader::line_no`].
+    pub fn rewind(&mut self, pos: usize) {
+        self.pos = pos.min(self.pos);
+    }
+
     /// Whether every line has been consumed.
     #[must_use]
     pub fn is_exhausted(&self) -> bool {

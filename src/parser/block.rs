@@ -23,7 +23,9 @@ use crate::parser::{Line, LineReader};
 /// is read, and are consumed silently.
 ///
 /// In strict mode a malformed block ends iteration after yielding its error. In lenient
-/// mode the block is skipped and reading continues, which mirrors GeneWeb's `no_fail`.
+/// mode the block is skipped and reading continues, which mirrors GeneWeb's `no_fail`:
+/// the rest of the block is passed over up to its end, so that its body is never read
+/// as blocks of its own.
 pub struct BlockReader<'a> {
     reader: LineReader<'a>,
     origin_file: String,
@@ -168,6 +170,56 @@ impl<'a> BlockReader<'a> {
         }
     }
 
+    /// After a malformed block, skips what is left of it.
+    ///
+    /// A block with an end marker is skipped up to and including that marker, unless the
+    /// failed read had already passed it. A `fam` block has none: it is skipped up to the
+    /// next line that opens a block. Without this, the body of a block whose first line
+    /// was malformed is read as blocks of its own: a line of note text starting with
+    /// `fam` becomes a family.
+    fn skip_rest_of_block(&mut self, header: &Line) {
+        let end = match header.keyword() {
+            "notes" => "end notes",
+            "rel" => "end",
+            "pevt" => "end pevt",
+            "notes-db" => "end notes-db",
+            "page-ext" => "end page-ext",
+            "wizard-note" => "end wizard-note",
+            "fam" => {
+                while let Some(line) = self.reader.next_block_line() {
+                    if BLOCK_KEYWORDS.contains(&line.keyword()) {
+                        self.reader.unread();
+                        break;
+                    }
+                }
+                return;
+            }
+            // An unknown block is a single line.
+            _ => return,
+        };
+        let is_end = |line: &Line| line.tokens.join(" ") == end;
+
+        // Did the failed read already consume the end marker?
+        let failed_at = self.reader.line_no();
+        self.reader.rewind(header.no);
+        let mut passed_end = false;
+        while self.reader.line_no() < failed_at {
+            match self.reader.next_raw_line() {
+                Some(line) if is_end(&line) => passed_end = true,
+                Some(_) => {}
+                None => break,
+            }
+        }
+        if passed_end {
+            return;
+        }
+        while let Some(line) = self.reader.next_raw_line() {
+            if is_end(&line) {
+                return;
+            }
+        }
+    }
+
     /// Consumes the `beg` line that opens a `notes` or `rel` body.
     fn expect_beg(&mut self, ctx: LineCtx<'_>) -> Result<()> {
         match self.reader.next_block_line() {
@@ -177,6 +229,19 @@ impl<'a> BlockReader<'a> {
         }
     }
 }
+
+/// The first words of the lines that open a block or are a directive.
+const BLOCK_KEYWORDS: &[&str] = &[
+    "fam",
+    "notes",
+    "notes-db",
+    "page-ext",
+    "wizard-note",
+    "rel",
+    "pevt",
+    "encoding:",
+    "gwplus",
+];
 
 impl Iterator for BlockReader<'_> {
     type Item = Result<GwBlock>;
@@ -192,7 +257,9 @@ impl Iterator for BlockReader<'_> {
                 // A directive: keep going.
                 Ok(None) => {}
                 Err(e) => {
-                    if !self.lenient {
+                    if self.lenient {
+                        self.skip_rest_of_block(&line);
+                    } else {
                         self.failed = true;
                     }
                     return Some(Err(e));
@@ -330,6 +397,43 @@ mod tests {
         assert!(r.next().unwrap().is_err());
         assert!(matches!(r.next().unwrap().unwrap(), GwBlock::Family(_)));
         assert!(r.next().is_none());
+    }
+
+    #[test]
+    fn lenient_mode_never_reads_the_body_of_a_bad_block_as_blocks() {
+        let input = concat!(
+            "notes Doe John extra\n",
+            "beg\n",
+            "fam Fake Line + Should_Not Exist\n",
+            "end notes\n",
+            "pevt Doe John\n",
+            "#birt 1900\n",
+            "birt 1900\n",
+            "#deat 1970\n",
+            "end pevt\n",
+            "fam Doe John + Roe Jane\n",
+        );
+        let (blocks, errors): (Vec<_>, Vec<_>) = BlockReader::new(input.as_bytes(), "t.gw")
+            .lenient(true)
+            .partition(Result::is_ok);
+        // One error per bad block, not one per line of its body.
+        assert_eq!(errors.len(), 2);
+        let blocks: Vec<_> = blocks.into_iter().map(Result::unwrap).collect();
+        assert_eq!(blocks.len(), 1);
+        let GwBlock::Family(family) = &blocks[0] else {
+            panic!("expected the real family")
+        };
+        assert_eq!(family.father.key().surname, "Doe");
+    }
+
+    #[test]
+    fn lenient_mode_resumes_at_the_next_block_after_a_bad_family() {
+        let input = "fam A B + C D E F G\nbeg\n- h Paul\nend\nfam H I + J K\n";
+        let (blocks, errors): (Vec<_>, Vec<_>) = BlockReader::new(input.as_bytes(), "t.gw")
+            .lenient(true)
+            .partition(Result::is_ok);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(blocks.len(), 1);
     }
 
     #[test]
