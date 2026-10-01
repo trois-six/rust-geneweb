@@ -830,7 +830,7 @@ mod tests {
 
     #[test]
     fn a_title_with_an_empty_ident_is_dropped() {
-        assert!(person("[nom:::::]").titles.is_empty());
+        assert_eq!(person("[nom:::::]").titles.len(), 0);
     }
 
     #[test]

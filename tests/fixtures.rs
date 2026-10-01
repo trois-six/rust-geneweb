@@ -19,7 +19,7 @@ fn read(input: &[u8]) -> Vec<GwBlock> {
 #[test]
 fn the_geneweb_reference_corpus_parses_cleanly() {
     let blocks = read(GALICHET);
-    assert!(!blocks.is_empty());
+    assert_ne!(blocks.len(), 0);
 
     let families = blocks
         .iter()
@@ -241,7 +241,7 @@ fn the_second_geneweb_sample_parses() {
         .flat_map(|p| &p.events)
         .find(|e| e.name == PersonEventName::Accomplishment)
         .expect("the accomplishment event");
-    assert!(!accomplishment.note.is_empty());
+    assert_ne!(accomplishment.note.len(), 0);
 
     let data = db.to_gedcom();
     assert_eq!(data.individuals.len(), 3);
