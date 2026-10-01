@@ -526,7 +526,10 @@ impl GwDatabase {
                 || !family.marriage_place.is_empty()
                 || !family.marriage_src.is_empty()
                 || !family.marriage_note.is_empty()
-                || family.relation != RelationKind::Married)
+                || family.relation != RelationKind::Married
+                // Witnesses of the union are worth an event on their own: without it
+                // there is nothing to hang their `ASSO` on.
+                || !family.witnesses.is_empty())
         {
             let mut d = detail(union.event);
             d.event_type = union.event_type;
@@ -554,6 +557,18 @@ impl GwDatabase {
             let mapping = event::family_event(&gw_event.name);
             out.events
                 .push(self.event_detail(gw_event, mapping, &gw_event.name.tag()));
+        }
+
+        // A `fevt` marriage supersedes the `fam` line's union, but the witnesses
+        // written on that line still attended it: they join the event's own.
+        if marriage_superseded {
+            if let Some(marriage) = out.events.iter_mut().find(|d| d.event == E::Marriage) {
+                for witness in family_witness_associations(family) {
+                    if !marriage.associations.iter().any(|a| a.xref == witness.xref) {
+                        marriage.associations.push(witness);
+                    }
+                }
+            }
         }
 
         if let Some(label) = relation_kind_label(family.relation) {
@@ -961,6 +976,35 @@ mod tests {
             .find(|e| e.event == E::Event)
             .expect("a generic event");
         assert_eq!(event.event_type.as_deref(), Some("Hospitalization"));
+    }
+
+    #[test]
+    fn family_witnesses_survive_a_union_without_details() {
+        // Nothing but witnesses on the `fam` line: no date, place, source or note.
+        let data = convert("fam Doe John + Roe Jane\nwit m: Poe Paul\nfam Poe Paul + Moe Mary\n");
+        let union = &data.families[0].events;
+        assert_eq!(union.len(), 1);
+        assert_eq!(union[0].event, E::Marriage);
+        assert_eq!(union[0].associations.len(), 1);
+        assert_eq!(union[0].associations[0].xref, "@I3@");
+    }
+
+    #[test]
+    fn family_witnesses_join_a_superseding_fevt_marriage() {
+        let data = convert(concat!(
+            "fam Doe John + Roe Jane\n",
+            "wit m: Poe Paul\n",
+            "fevt\n#marr 1925\nwit f: Moe Mary\nend fevt\n",
+            "fam Poe Paul + Moe Mary\n",
+        ));
+        let events = &data.families[0].events;
+        assert_eq!(events.len(), 1);
+        let xrefs: Vec<_> = events[0]
+            .associations
+            .iter()
+            .map(|a| a.xref.as_str())
+            .collect();
+        assert_eq!(xrefs, ["@I4@", "@I3@"]);
     }
 
     #[test]
