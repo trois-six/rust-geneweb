@@ -72,8 +72,12 @@ pub fn person_event(name: &PersonEventName) -> EventMapping {
         P::Retired => EventMapping::standard(Event::Retired),
         P::Will => EventMapping::standard(Event::Will),
 
-        // Standard GEDCOM tags that `ged_io` does not model as variants; they keep their
-        // GeneWeb label so no meaning is lost.
+        // Standard GEDCOM tags that are not events. `gwb2ged` writes them as `1 EDUC`,
+        // `1 BAPL`, …, but no GEDCOM structure of that tag can hold a `.gw` event:
+        // `EDUC`, `OCCU` and `PROP` are attributes whose payload (the achievement,
+        // the occupation, the possessions) is required and which a `.gw` event does not
+        // have, and an LDS ordinance has no room for witnesses or a cause. The tag
+        // therefore becomes the label of a generic event, which holds all of it.
         P::BaptismLds => EventMapping::generic("BAPL"),
         P::ConfirmationLds => EventMapping::generic("CONL"),
         P::Dotation => EventMapping::generic("ENDL"),
@@ -162,8 +166,8 @@ mod tests {
         // ends it. Both used to become `GRAD`, so a person's education was
         // indistinguishable from their graduation once exported — and reading the file
         // back could not tell them apart either. GEDCOM records schooling as the `EDUC`
-        // attribute, which `ged_io` does not model as an `Event` variant, so it takes
-        // the same shape as `OCCU` and `PROP` above.
+        // attribute, whose required payload a `.gw` event lacks, so it takes the same
+        // shape as `OCCU` and `PROP` above.
         let education = person_event(&PersonEventName::Education);
         assert_eq!(education.event, Event::Event);
         assert_eq!(education.event_type.as_deref(), Some("EDUC"));

@@ -859,7 +859,7 @@ fn death_event(death: &Death) -> Option<Detail> {
         Death::NotDead | Death::DontKnowIfDead => return None,
         Death::Dead { date, .. } => d.date = Some(date::to_gedcom(date)),
         // `1 DEAT Y` is the GEDCOM idiom for a death with no details. The nuance
-        // GeneWeb draws between these three goes in the note, since GEDCOM has no
+        // GeneWeb draws between these three goes in `_GWDEATH`, since GEDCOM has no
         // vocabulary for it.
         Death::DeadDontKnowWhen | Death::DeadYoung | Death::OfCourseDead => {
             d.value = Some("Y".to_owned());
@@ -947,8 +947,15 @@ fn page_tag(tag: &str, page: &crate::database::Page) -> UserDefinedTag {
 /// A user-defined tag holding text over several lines: its first line, and one `CONT`
 /// substructure per further line.
 ///
-/// `ged_io` keeps a user-defined tag as the lines it is made of, so a line break is a
-/// `CONT` of its own: a value holding one would be written as a broken line.
+/// This works around `ged_io` 0.17's writer, which writes a user-defined tag's value
+/// verbatim on the tag's line, whereas it splits a note's text over `CONT` lines: a
+/// line break in the value starts a line with no level number, which `ged_io`'s own
+/// parser rejects ("Expected digit for level number"). That parser keeps the `CONT`
+/// lines under a user-defined tag as substructures, so this is also the shape it reads
+/// back.
+///
+/// Lines longer than GEDCOM 5.5.1's 255 characters are not cut with `CONC`: `ged_io`
+/// writes and reads them whole.
 fn text_tag(tag: &str, text: &str) -> UserDefinedTag {
     let mut lines = text.split('\n');
     UserDefinedTag {
@@ -1451,6 +1458,43 @@ mod tests {
         let tags: Vec<_> = data.custom_data.iter().map(|t| t.tag.as_str()).collect();
         assert!(tags.contains(&TAG_PAGE));
         assert!(tags.contains(&TAG_WIZARD));
+    }
+
+    /// Canary for the `ged_io` writer bug `text_tag` works around: once this fails,
+    /// `ged_io` writes a multi-line user-defined value it can read back, and `text_tag`
+    /// can go.
+    #[test]
+    fn ged_io_still_writes_a_multi_line_user_defined_value_it_cannot_read() {
+        use ged_io::{GedcomBuilder, GedcomWriter};
+        let data = GedcomData {
+            custom_data: vec![Box::new(custom(TAG_PAGE, "first\nsecond"))],
+            ..GedcomData::default()
+        };
+        let written = GedcomWriter::new().write_to_string(&data).expect("writes");
+        assert!(written.contains("0 _GWPAGE first\nsecond\n"), "{written}");
+        assert!(GedcomBuilder::new().build_from_str(&written).is_err());
+    }
+
+    #[test]
+    fn a_page_of_several_lines_reads_back_as_written() {
+        use ged_io::{GedcomBuilder, GedcomWriter};
+        let page = crate::database::Page {
+            name: "Sample".to_owned(),
+            text: "first\n\nthird".to_owned(),
+        };
+        let data = GedcomData {
+            custom_data: vec![Box::new(page_tag(TAG_PAGE, &page))],
+            ..GedcomData::default()
+        };
+        let written = GedcomWriter::new().write_to_string(&data).expect("writes");
+        assert!(
+            written.contains("0 _GWPAGE Sample\n1 NOTE first\n2 CONT\n2 CONT third\n"),
+            "{written}"
+        );
+        let read = GedcomBuilder::new()
+            .build_from_str(&written)
+            .expect("reads back");
+        assert_eq!(read.custom_data, data.custom_data);
     }
 
     #[test]

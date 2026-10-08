@@ -5,6 +5,9 @@
 //!
 //! `ged_io` stores a date as an opaque string in GEDCOM syntax, so the whole job here is
 //! formatting: precision keyword, calendar escape, zero-padded day, month *name*, year.
+//! `ged_io`'s own structured formatter (`DateValue`) is not used: it needs the crate's
+//! `calendar` feature, which brings in three calendar dependencies, and it writes neither
+//! the zero-padded day `gwb2ged` writes nor a thirteenth Gregorian month (see `push_ymd`).
 
 use std::fmt::Write as _;
 
@@ -115,10 +118,9 @@ pub fn to_gedcom(date: &GwDate) -> Date {
         GwDate::Structured { dmy, calendar } => {
             out.value = Some(format_dmy(dmy, *calendar));
         }
-        // GEDCOM 5.5.1 admits a parenthesised phrase where a date is expected, which is
-        // what GeneWeb emits. The conversion produces GEDCOM 5.5.1 throughout, so the
-        // text is not repeated in `phrase`, a GEDCOM 7.0 substructure: a writer would
-        // emit it as a `PHRASE` line that 5.5.1 does not define.
+        // The GEDCOM 5.5.1 date phrase GeneWeb emits, in the shape `ged_io` reads one:
+        // the value `(text)`, with no `phrase`. `ged_io`'s writer turns it into an empty
+        // `DATE` with a `PHRASE` when it writes GEDCOM 7.0.
         GwDate::Text(text) => {
             out.value = Some(format!("({text})"));
         }
@@ -210,6 +212,17 @@ mod tests {
             "{written}"
         );
         assert!(!written.contains("PHRASE"), "{written}");
+
+        // Written as GEDCOM 7.0, the same date is a `PHRASE`: the version is the
+        // writer's business, not the conversion's.
+        let written = GedcomWriter::new()
+            .gedcom_version("7.0")
+            .write_to_string(&db.to_gedcom())
+            .expect("writes");
+        assert!(
+            written.contains("2 DATE\n3 PHRASE vers la Saint-Jean\n"),
+            "{written}"
+        );
     }
 
     #[test]
