@@ -2,7 +2,7 @@
 name = "geneweb"
 version = "0.2.0"
 edition = "2021"
-# Dictated by ged_io 0.16, which uses `slice::as_chunks` (stabilised in 1.88).
+# Dictated by ged_io 0.17, which uses `slice::as_chunks` (stabilised in 1.88).
 # ged_io declares no rust-version of its own, so this is verified here, not inherited.
 rust-version = "1.88"
 authors = ["Pierre Erraud <trois.six+github@ik.me>"]
@@ -28,7 +28,7 @@ include = [
 ]
 
 [dependencies]
-ged_io = "0.16"
+ged_io = "0.17"
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -80,18 +80,22 @@ fn family_xref(id: FamilyId) -> String {
 
 fn custom(tag: &str, value: &str) -> UserDefinedTag {
     UserDefinedTag {
+        xref: None,
         tag: tag.to_owned(),
         value: Some(value.to_owned()),
         children: Vec::new(),
     }
 }
 
-/// A note, or nothing when the text is empty.
-fn note(text: &str) -> Option<Note> {
-    (!text.is_empty()).then(|| Note {
-        value: Some(text.to_owned()),
-        ..Note::default()
-    })
+/// A note, or none when the text is empty.
+fn notes(text: &str) -> Vec<Note> {
+    (!text.is_empty())
+        .then(|| Note {
+            value: Some(text.to_owned()),
+            ..Note::default()
+        })
+        .into_iter()
+        .collect()
 }
 
 /// A place, or nothing when the name is empty.
@@ -111,7 +115,8 @@ fn citation(text: &str) -> Option<Citation> {
         source: CitationSource::Description(text.to_owned()),
         page: None,
         data: None,
-        note: None,
+        notes: Vec::new(),
+        texts: Vec::new(),
         certainty_assessment: None,
         submitter_registered_rfn: None,
         multimedia: Vec::new(),
@@ -132,7 +137,12 @@ fn detail(event: ged_io::types::event::Event) -> Detail {
         value: None,
         date: None,
         place: None,
-        note: None,
+        address: None,
+        phone: Vec::new(),
+        email: Vec::new(),
+        fax: Vec::new(),
+        website: Vec::new(),
+        notes: Vec::new(),
         family_link: None,
         family_event_details: Vec::new(),
         event_type: None,
@@ -145,6 +155,7 @@ fn detail(event: ged_io::types::event::Event) -> Detail {
         age: None,
         agency: None,
         religion: None,
+        custom_data: Vec::new(),
     }
 }
 
@@ -160,7 +171,7 @@ fn name_record(
         surname: (!surname.is_empty()).then(|| surname.to_owned()),
         prefix: None,
         surname_prefix: None,
-        note: None,
+        notes: Vec::new(),
         suffix: None,
         nickname: None,
         source: Vec::new(),
@@ -404,7 +415,7 @@ impl GwDatabase {
 
         individual.names = names(person);
         individual.sex = gender(person.sex);
-        individual.note = note(&person.notes);
+        individual.notes = notes(&person.notes);
         individual.source = citations(&person.sources);
         individual.events = self.life_events(id, person);
         individual.attributes = attributes(person);
@@ -469,7 +480,7 @@ impl GwDatabase {
             let mut d = detail(E::Birth);
             d.date = person.birth.as_ref().map(date::to_gedcom);
             d.place = place(&person.birth_place);
-            d.note = note(&person.birth_note);
+            d.notes = notes(&person.birth_note);
             d.citations = citations(&person.birth_src);
             events.push(d);
         }
@@ -483,24 +494,14 @@ impl GwDatabase {
             let mut d = detail(E::Baptism);
             d.date = person.baptism.as_ref().map(date::to_gedcom);
             d.place = place(&person.baptism_place);
-            d.note = note(&person.baptism_note);
+            d.notes = notes(&person.baptism_note);
             d.citations = citations(&person.baptism_src);
             events.push(d);
         }
 
         if let Some(mut d) = death_event(&person.death).filter(|_| !death_superseded) {
             d.place = place(&person.death_place);
-            // The death reason already rides on the note; the person's own note on the
-            // death comes first, the reason stays after it.
-            d.note = match (note(&person.death_note), d.note.take()) {
-                (Some(mut text), Some(reason)) => {
-                    let value = text.value.get_or_insert_with(String::new);
-                    value.push('\n');
-                    value.push_str(reason.value.as_deref().unwrap_or_default());
-                    Some(text)
-                }
-                (text, reason) => text.or(reason),
-            };
+            d.notes = notes(&person.death_note);
             d.citations = citations(&person.death_src);
             events.push(d);
         }
@@ -515,7 +516,7 @@ impl GwDatabase {
             let mut d = detail(kind);
             d.date = when.as_ref().map(date::to_gedcom);
             d.place = place(&person.burial_place);
-            d.note = note(&person.burial_note);
+            d.notes = notes(&person.burial_note);
             d.citations = citations(&person.burial_src);
             events.push(d);
         }
@@ -536,7 +537,8 @@ impl GwDatabase {
         if death_superseded {
             if let Some(reason) = death_reason(&person.death) {
                 if let Some(d) = events.iter_mut().find(|d| d.event == E::Death) {
-                    d.custom_data_push(TAG_DEATH_REASON, reason);
+                    d.custom_data
+                        .push(Box::new(custom(TAG_DEATH_REASON, reason)));
                 }
             }
         }
@@ -555,14 +557,15 @@ impl GwDatabase {
         d.event_type = mapping.event_type;
         d.date = gw_event.date.as_ref().map(date::to_gedcom);
         d.place = place(&gw_event.place);
-        d.note = note(&gw_event.note);
+        d.notes = notes(&gw_event.note);
         d.citations = citations(&gw_event.source);
         d.cause = (!gw_event.cause.is_empty()).then(|| gw_event.cause.clone());
         d.associations = witness_associations(witnesses);
         // An event that became a generic `EVEN` has lost which `.gw` tag it came from.
         // Recording the tag keeps the mapping reversible.
         if d.event_type.is_some() {
-            d.custom_data_push(TAG_EVENT, original_tag);
+            d.custom_data
+                .push(Box::new(custom(TAG_EVENT, original_tag)));
         }
         d
     }
@@ -592,7 +595,11 @@ impl GwDatabase {
                         xref: individual_xref(id),
                         relationship: Some(label.to_owned()),
                         association_type: Some("INDI".to_owned()),
-                        note: None,
+                        role: None,
+                        role_phrase: None,
+                        phrase: None,
+                        sources: Vec::new(),
+                        notes: Vec::new(),
                         custom_data: Vec::new(),
                     });
                 }
@@ -647,7 +654,7 @@ impl GwDatabase {
         };
 
         out.sources = citations(&family.sources);
-        out.notes = note(&family.comment).into_iter().collect();
+        out.notes = notes(&family.comment);
 
         // As with personal events, a `fevt` entry supersedes what the `fam` line says
         // about the same thing rather than adding a second copy of it.
@@ -672,7 +679,7 @@ impl GwDatabase {
             d.event_type = union.event_type;
             d.date = family.marriage.as_ref().map(date::to_gedcom);
             d.place = place(&family.marriage_place);
-            d.note = note(&family.marriage_note);
+            d.notes = notes(&family.marriage_note);
             d.citations = citations(&family.marriage_src);
             d.associations = family_witness_associations(family);
             out.events.push(d);
@@ -806,7 +813,11 @@ fn witness_associations(witnesses: &[ResolvedWitness]) -> Vec<Association> {
             xref: individual_xref(w.person),
             relationship: Some(event::witness_relationship(w.kind).to_owned()),
             association_type: Some("INDI".to_owned()),
-            note: None,
+            role: None,
+            role_phrase: None,
+            phrase: None,
+            sources: Vec::new(),
+            notes: Vec::new(),
             custom_data: Vec::new(),
         })
         .collect()
@@ -819,7 +830,7 @@ fn family_link(xref: &str, kind: FamilyLinkType) -> FamilyLink {
         pedigree_linkage_type: None,
         child_linkage_status: None,
         adopted_by: None,
-        note: None,
+        notes: Vec::new(),
         custom_data: Vec::new(),
     }
 }
@@ -855,7 +866,8 @@ fn death_event(death: &Death) -> Option<Detail> {
         }
     }
     if let Some(reason) = death_reason(death) {
-        d.custom_data_push(TAG_DEATH_REASON, reason);
+        d.custom_data
+            .push(Box::new(custom(TAG_DEATH_REASON, reason)));
     }
     Some(d)
 }
@@ -882,31 +894,6 @@ fn multimedia(path: &str) -> ged_io::types::multimedia::Multimedia {
     }
 }
 
-/// `Detail` has no custom-data field, so a death reason rides on the event's note.
-trait DetailExt {
-    fn custom_data_push(&mut self, tag: &str, value: &str);
-}
-
-impl DetailExt for Detail {
-    fn custom_data_push(&mut self, tag: &str, value: &str) {
-        let text = format!("{tag} {value}");
-        self.note = Some(match self.note.take() {
-            Some(mut existing) => {
-                let value = existing.value.get_or_insert_with(String::new);
-                if !value.is_empty() {
-                    value.push('\n');
-                }
-                value.push_str(&text);
-                existing
-            }
-            None => Note {
-                value: Some(text),
-                ..Note::default()
-            },
-        });
-    }
-}
-
 fn attributes(person: &Person) -> Vec<AttributeDetail> {
     let mut out = Vec::new();
     if !person.occupation.is_empty() {
@@ -918,7 +905,7 @@ fn attributes(person: &Person) -> Vec<AttributeDetail> {
     for title in &person.titles {
         let mut a = attribute(IndividualAttribute::NobilityTypeTitle, &title_value(title));
         a.date = title_period(title);
-        a.note = note(title_holder(title, person));
+        a.notes = notes(title_holder(title, person));
         out.push(a);
     }
     out
@@ -931,7 +918,7 @@ fn attribute(kind: IndividualAttribute, value: &str) -> AttributeDetail {
         place: None,
         date: None,
         sources: Vec::new(),
-        note: None,
+        notes: Vec::new(),
         attribute_type: None,
         restriction: None,
         age: None,
@@ -939,18 +926,48 @@ fn attribute(kind: IndividualAttribute, value: &str) -> AttributeDetail {
         cause: None,
         agency: None,
         multimedia: Vec::new(),
+        phone: Vec::new(),
+        email: Vec::new(),
+        fax: Vec::new(),
+        website: Vec::new(),
+        associations: Vec::new(),
+        custom_data: Vec::new(),
     }
 }
 
 fn page_tag(tag: &str, page: &crate::database::Page) -> UserDefinedTag {
     UserDefinedTag {
+        xref: None,
         tag: tag.to_owned(),
         value: (!page.name.is_empty()).then(|| page.name.clone()),
-        children: vec![Box::new(UserDefinedTag {
-            tag: "NOTE".to_owned(),
-            value: Some(page.text.clone()),
-            children: Vec::new(),
-        })],
+        children: vec![Box::new(text_tag("NOTE", &page.text))],
+    }
+}
+
+/// A user-defined tag holding text over several lines: its first line, and one `CONT`
+/// substructure per further line.
+///
+/// `ged_io` keeps a user-defined tag as the lines it is made of, so a line break is a
+/// `CONT` of its own: a value holding one would be written as a broken line.
+fn text_tag(tag: &str, text: &str) -> UserDefinedTag {
+    let mut lines = text.split('\n');
+    UserDefinedTag {
+        xref: None,
+        tag: tag.to_owned(),
+        value: lines
+            .next()
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned),
+        children: lines
+            .map(|line| {
+                Box::new(UserDefinedTag {
+                    xref: None,
+                    tag: "CONT".to_owned(),
+                    value: (!line.is_empty()).then(|| line.to_owned()),
+                    children: Vec::new(),
+                })
+            })
+            .collect(),
     }
 }
 
@@ -1158,13 +1175,13 @@ mod tests {
             Some("FROM 1800 TO 1810")
         );
         assert_eq!(
-            count.note.as_ref().and_then(|n| n.value.as_deref()),
+            count.notes.first().and_then(|n| n.value.as_deref()),
             Some("Samplename")
         );
 
         let baron = titles[1];
         assert_eq!(baron.value.as_deref(), Some("Baron, Sampleton"));
-        assert!(baron.date.is_none() && baron.note.is_none() && baron.place.is_none());
+        assert!(baron.date.is_none() && baron.notes.is_empty() && baron.place.is_none());
     }
 
     #[test]
@@ -1191,25 +1208,40 @@ mod tests {
         assert!(tags.contains(&(TAG_IMAGE, Some("p.jpg"))));
     }
 
-    #[test]
-    fn the_death_reason_survives_a_death_note() {
-        let data = convert("fam Doe John k1900 + Roe Jane\n");
-        let death = |data: &GedcomData| {
-            data.individuals[0]
-                .events
-                .iter()
-                .find(|e| e.event == E::Death)
-                .and_then(|d| d.note.as_ref())
-                .and_then(|n| n.value.clone())
-        };
-        assert_eq!(death(&data).as_deref(), Some("_GWDEATH killed"));
+    /// The death reason and the note of a death event, as converted.
+    fn death_reason_and_note(data: &GedcomData) -> (Vec<String>, Vec<String>) {
+        let death = data.individuals[0]
+            .events
+            .iter()
+            .find(|e| e.event == E::Death)
+            .expect("a death");
+        let reasons = death
+            .custom_data
+            .iter()
+            .filter(|t| t.tag == TAG_DEATH_REASON)
+            .filter_map(|t| t.value.clone())
+            .collect();
+        let notes = death.notes.iter().filter_map(|n| n.value.clone()).collect();
+        (reasons, notes)
+    }
 
-        // A death with its own note keeps both.
+    #[test]
+    fn the_death_reason_is_a_tag_of_the_death_beside_its_note() {
+        let data = convert("fam Doe John k1900 + Roe Jane\n");
+        assert_eq!(
+            death_reason_and_note(&data),
+            (vec!["killed".to_owned()], Vec::new())
+        );
+
+        // A death with its own note keeps it whole, apart from the reason.
         let mut db = GwDatabase::read(b"fam Doe John k1900 + Roe Jane\n", "t.gw").expect("parses");
         db.persons[0].death_note = "Fell at the front".to_owned();
         assert_eq!(
-            death(&db.to_gedcom()).as_deref(),
-            Some("Fell at the front\n_GWDEATH killed")
+            death_reason_and_note(&db.to_gedcom()),
+            (
+                vec!["killed".to_owned()],
+                vec!["Fell at the front".to_owned()]
+            )
         );
     }
 
@@ -1223,8 +1255,8 @@ mod tests {
             .collect();
         assert_eq!(deaths.len(), 1);
         assert_eq!(
-            deaths[0].note.as_ref().and_then(|n| n.value.as_deref()),
-            Some("_GWDEATH killed")
+            death_reason_and_note(&data),
+            (vec!["killed".to_owned()], Vec::new())
         );
     }
 
@@ -1419,6 +1451,18 @@ mod tests {
         let tags: Vec<_> = data.custom_data.iter().map(|t| t.tag.as_str()).collect();
         assert!(tags.contains(&TAG_PAGE));
         assert!(tags.contains(&TAG_WIZARD));
+    }
+
+    #[test]
+    fn a_page_of_several_lines_is_continued_line_by_line() {
+        let tag = text_tag("NOTE", "first\n\nthird");
+        assert_eq!(tag.value.as_deref(), Some("first"));
+        let continued: Vec<_> = tag
+            .children
+            .iter()
+            .map(|t| (t.tag.as_str(), t.value.as_deref()))
+            .collect();
+        assert_eq!(continued, [("CONT", None), ("CONT", Some("third"))]);
     }
 
     #[test]

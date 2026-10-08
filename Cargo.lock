@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "ged_io"
-version = "0.16.4"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2ac6ca2ce34326ace67161a690ea78ecb7980ec56def334382b9d6ba0599866"
+checksum = "e4c52d91a78332ce0dfb60e2f53227ecdb58f99afe624c8e69506dc225a39caf"
 
 [[package]]
 name = "geneweb"

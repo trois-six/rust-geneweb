@@ -140,13 +140,24 @@ fn gallery_page_keeps_its_media_reference() {
         .iter()
         .find(|tag| tag.tag == "_GWPAGE" && tag.value.as_deref() == Some("Gallery"))
         .expect("the Gallery GEDCOM extension");
-    assert!(page.children.iter().any(|child| {
-        child.tag == "NOTE"
-            && child
-                .value
-                .as_deref()
-                .is_some_and(|value| value.contains("jean_pierre.0.galichet.jpg"))
-    }));
+    // The page's text, its line breaks written as `CONT` substructures of the note.
+    let note = page
+        .children
+        .iter()
+        .find(|child| child.tag == "NOTE")
+        .expect("the page's note");
+    let text: Vec<&str> = note
+        .value
+        .as_deref()
+        .into_iter()
+        .chain(
+            note.children
+                .iter()
+                .filter(|line| line.tag == "CONT")
+                .map(|line| line.value.as_deref().unwrap_or_default()),
+        )
+        .collect();
+    assert!(text.join("\n").contains("jean_pierre.0.galichet.jpg"));
 }
 
 /// Reading a `.gw` and writing GEDCOM, then reading that GEDCOM back with `ged_io`.
