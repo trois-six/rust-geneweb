@@ -3,15 +3,15 @@
 //! Follows `ged_date_dmy` in GeneWeb's `bin/gwb2ged/gwb2gedLib.ml`, so that this crate
 //! and GeneWeb's own exporter produce the same strings.
 //!
-//! `ged_io` stores a date as an opaque string in GEDCOM syntax, so the whole job here is
-//! formatting: precision keyword, calendar escape, zero-padded day, month *name*, year.
-//! `ged_io`'s own structured formatter (`DateValue`) is not used: it needs the crate's
-//! `calendar` feature, which brings in three calendar dependencies, and it writes neither
-//! the zero-padded day `gwb2ged` writes nor a thirteenth Gregorian month (see `push_ymd`).
+//! `ged_io` keeps a date as the text it is written as, in GEDCOM syntax, so the whole job
+//! here is formatting: precision keyword, calendar escape, zero-padded day, month *name*,
+//! year. `ged_io`'s writer converts that text to the grammar of the version it writes.
+//! The formatting stays here rather than in `ged_io`'s date values because it reproduces
+//! `gwb2ged`: a zero-padded day, and a thirteenth Gregorian month kept as its number.
 
 use std::fmt::Write as _;
 
-use ged_io::types::date::Date;
+use ged_io::model::Date;
 
 use crate::date::{Calendar, Dmy, Dmy2, GwDate, Precision};
 
@@ -110,22 +110,21 @@ pub fn format_dmy(dmy: &Dmy, calendar: Calendar) -> String {
     out
 }
 
+/// The GEDCOM 5.5.1 date value of a `.gw` date.
+pub(crate) fn value(date: &GwDate) -> String {
+    match date {
+        GwDate::Structured { dmy, calendar } => format_dmy(dmy, *calendar),
+        // The GEDCOM 5.5.1 date phrase GeneWeb emits: the value `(text)`, with no
+        // `PHRASE`. `ged_io`'s writer turns it into an empty `DATE` with a `PHRASE` when
+        // it writes GEDCOM 7.
+        GwDate::Text(text) => format!("({text})"),
+    }
+}
+
 /// Converts a `.gw` date into a `ged_io` date.
 #[must_use]
 pub fn to_gedcom(date: &GwDate) -> Date {
-    let mut out = Date::default();
-    match date {
-        GwDate::Structured { dmy, calendar } => {
-            out.value = Some(format_dmy(dmy, *calendar));
-        }
-        // The GEDCOM 5.5.1 date phrase GeneWeb emits, in the shape `ged_io` reads one:
-        // the value `(text)`, with no `phrase`. `ged_io`'s writer turns it into an empty
-        // `DATE` with a `PHRASE` when it writes GEDCOM 7.0.
-        GwDate::Text(text) => {
-            out.value = Some(format!("({text})"));
-        }
-    }
-    out
+    Date::new(value(date))
 }
 
 #[cfg(test)]
@@ -137,7 +136,11 @@ mod tests {
         let date = parse(s)
             .unwrap_or_else(|e| panic!("{e}"))
             .unwrap_or_else(|| panic!("{s:?} is an unknown date"));
-        to_gedcom(&date).value.expect("a date value")
+        to_gedcom(&date)
+            .value
+            .as_owned()
+            .expect("a date the conversion owns")
+            .to_owned()
     }
 
     #[test]
@@ -191,14 +194,14 @@ mod tests {
     fn text_dates_become_a_phrase() {
         let date = parse("0(vers la Saint-Jean)").unwrap().unwrap();
         let out = to_gedcom(&date);
-        assert_eq!(out.value.as_deref(), Some("(vers la Saint-Jean)"));
+        assert_eq!(out.value.as_owned(), Some("(vers la Saint-Jean)"));
         // The 5.5.1 date phrase only: no GEDCOM 7.0 PHRASE beside it.
-        assert_eq!(out.phrase, None);
+        assert_eq!(out.detail().phrase, None);
     }
 
     #[test]
     fn a_text_date_is_written_as_gedcom_5_5_1() {
-        use ged_io::GedcomWriter;
+        use ged_io::{GedcomVersion, GedcomWriter};
         let db = crate::database::GwDatabase::read(
             b"fam Doe John 0(vers_la_Saint-Jean) + Roe Jane\n",
             "t.gw",
@@ -216,7 +219,7 @@ mod tests {
         // Written as GEDCOM 7.0, the same date is a `PHRASE`: the version is the
         // writer's business, not the conversion's.
         let written = GedcomWriter::new()
-            .gedcom_version("7.0")
+            .gedcom_version(GedcomVersion::V7_0)
             .write_to_string(&db.to_gedcom())
             .expect("writes");
         assert!(

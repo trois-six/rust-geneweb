@@ -124,6 +124,8 @@ fn person_and_family_counts_match_gwc() {
 
 #[test]
 fn gallery_page_keeps_its_media_reference() {
+    use ged_io::model::Value;
+
     let db = geneweb::database::GwDatabase::read(GALICHET, "galichet.gw").expect("parses");
     let gallery = db
         .pages
@@ -135,29 +137,25 @@ fn gallery_page_keeps_its_media_reference() {
         .contains("\"img\": \"jean_pierre.0.galichet.jpg\""));
 
     let data = db.to_gedcom();
+    let store = data.store();
     let page = data
-        .custom_data
+        .extra
         .iter()
-        .find(|tag| tag.tag == "_GWPAGE" && tag.value.as_deref() == Some("Gallery"))
+        .find(|node| {
+            store.tag(node.tag) == "_GWPAGE"
+                && matches!(&node.payload, Value::Text(t) if t.eq_str(store, "Gallery"))
+        })
         .expect("the Gallery GEDCOM extension");
-    // The page's text, its line breaks written as `CONT` substructures of the note.
+    // The page's text, whole, in the note.
     let note = page
         .children
         .iter()
-        .find(|child| child.tag == "NOTE")
+        .find(|child| store.tag(child.tag) == "NOTE")
         .expect("the page's note");
-    let text: Vec<&str> = note
-        .value
-        .as_deref()
-        .into_iter()
-        .chain(
-            note.children
-                .iter()
-                .filter(|line| line.tag == "CONT")
-                .map(|line| line.value.as_deref().unwrap_or_default()),
-        )
-        .collect();
-    assert!(text.join("\n").contains("jean_pierre.0.galichet.jpg"));
+    let Value::Text(text) = &note.payload else {
+        panic!("the note has the page's text")
+    };
+    assert!(text.to_str(store).contains("jean_pierre.0.galichet.jpg"));
 }
 
 /// Reading a `.gw` and writing GEDCOM, then reading that GEDCOM back with `ged_io`.
@@ -166,8 +164,7 @@ fn gallery_page_keeps_its_media_reference() {
 /// ecosystem can read, not just something that round-trips through our own types.
 #[test]
 fn a_gw_file_exports_to_gedcom_and_reads_back() {
-    use ged_io::writer::GedcomWriter;
-    use ged_io::GedcomBuilder;
+    use ged_io::{GedcomBuilder, GedcomWriter};
 
     let db = geneweb::database::GwDatabase::read(GALICHET, "galichet.gw").expect("parses");
     let data = db.to_gedcom();
@@ -204,14 +201,19 @@ fn a_gw_file_exports_to_gedcom_and_reads_back() {
 /// Emitting both produced two `DEAT` records for one death.
 #[test]
 fn a_structured_event_supersedes_the_line_it_repeats() {
-    use ged_io::types::event::Event;
+    use ged_io::model::EventKind;
 
     let db = geneweb::database::GwDatabase::read(GALICHET, "galichet.gw").expect("parses");
     let data = db.to_gedcom();
 
     for individual in &data.individuals {
-        for kind in [Event::Birth, Event::Death, Event::Burial, Event::Baptism] {
-            let count = individual.events.iter().filter(|e| e.event == kind).count();
+        for kind in [
+            EventKind::Birth,
+            EventKind::Death,
+            EventKind::Burial,
+            EventKind::Baptism,
+        ] {
+            let count = individual.events_of(kind.clone()).count();
             assert!(
                 count <= 1,
                 "{:?} has {count} {kind:?} events",
@@ -220,8 +222,8 @@ fn a_structured_event_supersedes_the_line_it_repeats() {
         }
     }
     for family in &data.families {
-        for kind in [Event::Marriage, Event::Divorce] {
-            let count = family.events.iter().filter(|e| e.event == kind).count();
+        for kind in [EventKind::Marriage, EventKind::Divorce] {
+            let count = family.events.iter().filter(|e| e.kind == kind).count();
             assert!(count <= 1, "{:?} has {count} {kind:?} events", family.xref);
         }
     }

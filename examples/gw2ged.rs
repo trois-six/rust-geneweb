@@ -10,7 +10,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use ged_io::writer::GedcomWriter;
+use ged_io::GedcomWriter;
 use geneweb::database::GwDatabase;
 
 fn main() -> std::process::ExitCode {

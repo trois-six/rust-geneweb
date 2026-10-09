@@ -26,25 +26,16 @@
 pub mod date;
 pub mod event;
 
-use ged_io::types::custom::UserDefinedTag;
 use std::fmt::Write as _;
 
-use ged_io::types::event::detail::Detail;
-use ged_io::types::header::source::HeadSour;
-use ged_io::types::header::Header;
-use ged_io::types::individual::association::Association;
-use ged_io::types::individual::attribute::detail::AttributeDetail;
-use ged_io::types::individual::attribute::IndividualAttribute;
-use ged_io::types::individual::family_link::adopted::AdoptedByWhichParent;
-use ged_io::types::individual::family_link::pedigree::Pedigree;
-use ged_io::types::individual::family_link::{FamilyLink, FamilyLinkType};
-use ged_io::types::individual::gender::{Gender, GenderType};
-use ged_io::types::individual::name::Name;
-use ged_io::types::individual::Individual;
-use ged_io::types::note::Note;
-use ged_io::types::place::Place;
-use ged_io::types::source::citation::{Citation, CitationSource};
-use ged_io::types::{family::Family as GedFamily, GedcomData};
+use ged_io::model::ChildLink;
+use ged_io::model::{
+    Adoption, Association, Citation, CitationSource, Dataset, EnumList, Event, EventFamily,
+    EventKind, Family, File, Header, HeaderSource, Individual, IndividualRef, MultimediaLink, Name,
+    NamePiece, NamePieceKind, NameType, Node, Note, Pedigree, Phrased, Place, Restriction,
+    Sex as GedSex, SpouseLink, Store, TagId, Text, ThinVec, Value, XrefId,
+};
+use ged_io::GedcomVersion;
 
 use crate::database::{FamilyId, FamilyRecord, GwDatabase, PersonId, ResolvedWitness};
 use crate::model::event::{Event as GwEvent, FamilyEventName as F, WitnessKind};
@@ -70,30 +61,74 @@ pub const TAG_PAGE: &str = "_GWPAGE";
 /// A note attached to a contributor.
 pub const TAG_WIZARD: &str = "_GWWIZARD";
 
-fn individual_xref(id: PersonId) -> String {
-    format!("@I{}@", id + 1)
+/// The identifiers and extension tags of one conversion, interned in the dataset's
+/// store before any record is built, so that building them reads the store no more.
+struct Ids {
+    /// `@I{n}@` of each person, by [`PersonId`].
+    persons: Vec<XrefId>,
+    /// `@F{n}@` of each family: the file's, then the ones `rel` blocks imply.
+    families: Vec<XrefId>,
+    occurrence: TagId,
+    access: TagId,
+    image: TagId,
+    death_reason: TagId,
+    relation_kind: TagId,
+    event: TagId,
+    page: TagId,
+    wizard: TagId,
+    note: TagId,
 }
 
-fn family_xref(id: FamilyId) -> String {
-    format!("@F{}@", id + 1)
+/// Interns an identifier. A store holds four billion of them; a `.gw` file never
+/// comes close.
+fn intern(store: &mut Store, xref: &str) -> XrefId {
+    store
+        .intern_xref(xref)
+        .expect("a store holds four billion identifiers")
 }
 
-fn custom(tag: &str, value: &str) -> UserDefinedTag {
-    UserDefinedTag {
-        xref: None,
-        tag: tag.to_owned(),
-        value: Some(value.to_owned()),
-        children: Vec::new(),
+impl Ids {
+    fn new(store: &mut Store, persons: usize, families: usize) -> Self {
+        Self {
+            persons: (1..=persons)
+                .map(|n| intern(store, &format!("@I{n}@")))
+                .collect(),
+            families: (1..=families)
+                .map(|n| intern(store, &format!("@F{n}@")))
+                .collect(),
+            occurrence: store.intern_tag(TAG_OCCURRENCE),
+            access: store.intern_tag(TAG_ACCESS),
+            image: store.intern_tag(TAG_IMAGE),
+            death_reason: store.intern_tag(TAG_DEATH_REASON),
+            relation_kind: store.intern_tag(TAG_RELATION_KIND),
+            event: store.intern_tag(TAG_EVENT),
+            page: store.intern_tag(TAG_PAGE),
+            wizard: store.intern_tag(TAG_WIZARD),
+            note: store.intern_tag("NOTE"),
+        }
+    }
+
+    fn person(&self, id: PersonId) -> XrefId {
+        self.persons[id]
+    }
+
+    fn family(&self, id: FamilyId) -> XrefId {
+        self.families[id]
+    }
+}
+
+/// A user-defined structure holding a text.
+fn custom(tag: TagId, value: &str) -> Node {
+    Node {
+        payload: Value::Text(Text::from(value)),
+        ..Node::new(tag)
     }
 }
 
 /// A note, or none when the text is empty.
-fn notes(text: &str) -> Vec<Note> {
+fn notes<C: FromIterator<Note>>(text: &str) -> C {
     (!text.is_empty())
-        .then(|| Note {
-            value: Some(text.to_owned()),
-            ..Note::default()
-        })
+        .then(|| Note::text(text))
         .into_iter()
         .collect()
 }
@@ -101,7 +136,7 @@ fn notes(text: &str) -> Vec<Note> {
 /// A place, or nothing when the name is empty.
 fn place(name: &str) -> Option<Place> {
     (!name.is_empty()).then(|| Place {
-        value: Some(name.to_owned()),
+        name: Text::from(name),
         ..Place::default()
     })
 }
@@ -110,76 +145,60 @@ fn place(name: &str) -> Option<Place> {
 ///
 /// `.gw` sources are free text, not pointers into a source record, so they become
 /// `SOUR <text>` rather than a cross-reference.
-fn citation(text: &str) -> Option<Citation> {
-    (!text.is_empty()).then(|| Citation {
-        source: CitationSource::Description(text.to_owned()),
-        page: None,
-        data: None,
-        notes: Vec::new(),
-        texts: Vec::new(),
-        certainty_assessment: None,
-        submitter_registered_rfn: None,
-        multimedia: Vec::new(),
-        custom_data: Vec::new(),
-        event_type: None,
-        role: None,
-    })
+fn citations<C: FromIterator<Citation>>(text: &str) -> C {
+    (!text.is_empty())
+        .then(|| Citation {
+            source: CitationSource::Description(Text::from(text)),
+            ..Citation::default()
+        })
+        .into_iter()
+        .collect()
 }
 
-fn citations(text: &str) -> Vec<Citation> {
-    citation(text).into_iter().collect()
-}
-
-/// An empty event detail of the given kind, ready to be filled in.
-fn detail(event: ged_io::types::event::Event) -> Detail {
-    Detail {
-        event,
-        value: None,
-        date: None,
-        place: None,
-        address: None,
-        phone: Vec::new(),
-        email: Vec::new(),
-        fax: Vec::new(),
-        website: Vec::new(),
-        notes: Vec::new(),
-        family_link: None,
-        family_event_details: Vec::new(),
-        event_type: None,
-        citations: Vec::new(),
-        multimedia: Vec::new(),
-        sort_date: None,
-        associations: Vec::new(),
-        cause: None,
-        restriction: None,
-        age: None,
-        agency: None,
-        religion: None,
-        custom_data: Vec::new(),
+/// Sets the notes of an event, leaving its detail unallocated when there are none.
+fn set_notes(event: &mut Event, text: &str) {
+    if !text.is_empty() {
+        event.detail_mut().notes = notes(text);
     }
 }
 
-fn name_record(
-    value: String,
-    given: &str,
-    surname: &str,
-    name_type: Option<ged_io::types::individual::name::NameType>,
-) -> Name {
-    Name {
-        value: Some(value),
-        given: (!given.is_empty()).then(|| given.to_owned()),
-        surname: (!surname.is_empty()).then(|| surname.to_owned()),
-        prefix: None,
-        surname_prefix: None,
-        notes: Vec::new(),
-        suffix: None,
-        nickname: None,
-        source: Vec::new(),
-        name_type,
-        phonetic: Vec::new(),
-        romanized: Vec::new(),
-        custom_data: Vec::new(),
+/// A name: its value, and its given name and surname as pieces.
+fn name_record(value: String, given: &str, surname: &str, name_type: Option<NameType>) -> Name {
+    let mut name = Name::new(value);
+    for (kind, piece) in [
+        (NamePieceKind::Given, given),
+        (NamePieceKind::Surname, surname),
+    ] {
+        if !piece.is_empty() {
+            name.pieces.push(NamePiece {
+                kind,
+                value: Text::from(piece),
+            });
+        }
     }
+    if let Some(kind) = name_type {
+        name.detail_mut().kind = Some(Phrased::new(kind));
+    }
+    name
+}
+
+/// Adds a nickname (`NICK`) to a name, in the place GEDCOM gives the piece: after the
+/// given names, before the surname.
+fn add_nickname(name: &mut Name, nickname: &str) {
+    let at = name
+        .pieces
+        .iter()
+        .position(|p| p.kind == NamePieceKind::Surname)
+        .unwrap_or(name.pieces.len());
+    let mut pieces = std::mem::take(&mut name.pieces).into_vec();
+    pieces.insert(
+        at,
+        NamePiece {
+            kind: NamePieceKind::Nickname,
+            value: Text::from(nickname),
+        },
+    );
+    name.pieces = ThinVec::from(pieces);
 }
 
 /// The `NAME` value GEDCOM expects: given name, then surname between slashes.
@@ -213,22 +232,21 @@ fn death_reason_label(reason: DeathReason) -> Option<&'static str> {
 /// `#noment`, `#pacs`. Writing `MARR` for those would state the opposite of what the
 /// file says, so they become a generic event carrying their own label instead.
 fn relation_kind_event(kind: RelationKind) -> event::EventMapping {
-    use ged_io::types::event::Event as E;
-    let standard = |e: E| event::EventMapping {
+    let standard = |e: EventKind| event::EventMapping {
         event: e,
         event_type: None,
     };
     let generic = |label: &str| event::EventMapping {
-        event: E::Event,
+        event: EventKind::Event,
         event_type: Some(label.to_owned()),
     };
     match kind {
-        RelationKind::Married | RelationKind::NoSexesCheckMarried => standard(E::Marriage),
-        RelationKind::Engaged => standard(E::Engagement),
-        RelationKind::MarriageBann => standard(E::MarriageBann),
-        RelationKind::MarriageContract => standard(E::MarriageContract),
-        RelationKind::MarriageLicense => standard(E::MarriageLicense),
-        RelationKind::Residence => standard(E::Residence),
+        RelationKind::Married | RelationKind::NoSexesCheckMarried => standard(EventKind::Marriage),
+        RelationKind::Engaged => standard(EventKind::Engagement),
+        RelationKind::MarriageBann => standard(EventKind::MarriageBann),
+        RelationKind::MarriageContract => standard(EventKind::MarriageContract),
+        RelationKind::MarriageLicense => standard(EventKind::MarriageLicense),
+        RelationKind::Residence => standard(EventKind::Residence),
         RelationKind::NotMarried | RelationKind::NoSexesCheckNotMarried => generic("unmarried"),
         RelationKind::NoMention => generic("nomen"),
         RelationKind::Pacs => generic("pacs"),
@@ -262,15 +280,18 @@ struct ImpliedFamily<'a> {
 
 /// The `ADOP` event of an adopted child, pointing at the adoptive family and saying
 /// which of its parents adopted.
-fn adoption_event(family_xref: &str, family: &ImpliedFamily<'_>) -> Detail {
-    let mut link = family_link(family_xref, FamilyLinkType::Child);
-    link.adopted_by = Some(match (family.father, family.mother) {
-        (Some(_), Some(_)) => AdoptedByWhichParent::Both,
-        (Some(_), None) => AdoptedByWhichParent::Husband,
-        _ => AdoptedByWhichParent::Wife,
+fn adoption_event(family: XrefId, implied: &ImpliedFamily<'_>) -> Event {
+    let adopted_by = match (implied.father, implied.mother) {
+        (Some(_), Some(_)) => Adoption::Both,
+        (Some(_), None) => Adoption::Husband,
+        _ => Adoption::Wife,
+    };
+    let mut d = Event::new(EventKind::Adoption);
+    d.detail_mut().family = Some(EventFamily {
+        family: Some(family),
+        adopted_by: Some(Phrased::new(adopted_by)),
+        ..EventFamily::default()
     });
-    let mut d = detail(ged_io::types::event::Event::Adoption);
-    d.family_link = Some(link);
     d
 }
 
@@ -302,22 +323,16 @@ fn title_value(title: &Title) -> String {
 
 /// The period a title was held, as `gwb2ged` writes it: `FROM start TO end`, either end
 /// possibly missing.
-fn title_period(title: &Title) -> Option<ged_io::types::date::Date> {
-    let bound = |d: &Option<crate::date::GwDate>| {
-        d.as_ref()
-            .and_then(|d| date::to_gedcom(d).value)
-            .filter(|v| !v.is_empty())
-    };
+fn title_period(title: &Title) -> Option<ged_io::model::Date> {
+    let bound =
+        |d: &Option<crate::date::GwDate>| d.as_ref().map(date::value).filter(|v| !v.is_empty());
     let value = match (bound(&title.date_start), bound(&title.date_end)) {
         (None, None) => return None,
         (Some(start), None) => format!("FROM {start}"),
         (None, Some(end)) => format!("TO {end}"),
         (Some(start), Some(end)) => format!("FROM {start} TO {end}"),
     };
-    Some(ged_io::types::date::Date {
-        value: Some(value),
-        ..ged_io::types::date::Date::default()
-    })
+    Some(ged_io::model::Date::new(value))
 }
 
 /// The name a title is held under, as `gwb2ged` notes it: the person's public name for
@@ -333,123 +348,130 @@ fn title_holder<'a>(title: &'a Title, person: &'a Person) -> &'a str {
 // Some of these read no database state today, but they are part of one conversion
 // and are kept together so callers see a single, consistent surface.
 impl GwDatabase {
-    /// Converts this database into `ged_io`'s GEDCOM model.
+    /// Converts this database into `ged_io`'s GEDCOM model: a GEDCOM 5.5.1 dataset
+    /// whose texts it owns.
     ///
-    /// The result can be serialised with [`ged_io::writer::GedcomWriter`] or inspected
-    /// with the rest of the `ged_io` API.
+    /// The result can be written with [`ged_io::GedcomWriter`], in any version it
+    /// writes, or inspected with the rest of the `ged_io` API.
     #[must_use]
-    pub fn to_gedcom(&self) -> GedcomData {
-        let mut data = GedcomData {
-            header: Some(header()),
-            individuals: Vec::with_capacity(self.persons.len()),
-            families: Vec::with_capacity(self.families.len()),
-            ..GedcomData::default()
-        };
+    pub fn to_gedcom(&self) -> Dataset {
+        let implied = self.implied_families();
+        let mut data = Dataset::new(GedcomVersion::V5_5_1);
+        let ids = Ids::new(
+            data.store_mut(),
+            self.persons.len(),
+            self.families.len() + implied.len(),
+        );
+        data.header = Some(header());
 
         // Which families each person belongs to, and how.
-        let mut links: Vec<Vec<FamilyLink>> = vec![Vec::new(); self.persons.len()];
+        let mut spouse_of: Vec<Vec<SpouseLink>> = vec![Vec::new(); self.persons.len()];
+        let mut child_of: Vec<Vec<ChildLink>> = vec![Vec::new(); self.persons.len()];
         for (id, family) in self.families.iter().enumerate() {
-            let xref = family_xref(id);
+            let xref = ids.family(id);
             for parent in [family.father, family.mother] {
-                links[parent].push(family_link(&xref, FamilyLinkType::Spouse));
+                spouse_of[parent].push(SpouseLink::new(xref));
             }
             for &child in &family.children {
-                links[child].push(family_link(&xref, FamilyLinkType::Child));
+                child_of[child].push(ChildLink::new(xref));
             }
         }
 
         // Adoptive and foster parents named in `rel` blocks form families of their own,
         // numbered after the file's.
-        let implied = self.implied_families();
         for (i, family) in implied.iter().enumerate() {
-            let xref = family_xref(self.families.len() + i);
+            let xref = ids.family(self.families.len() + i);
             for parent in [family.father, family.mother].into_iter().flatten() {
-                links[parent].push(family_link(&xref, FamilyLinkType::Spouse));
+                spouse_of[parent].push(SpouseLink::new(xref));
             }
-            let mut link = family_link(&xref, FamilyLinkType::Child);
-            link.pedigree_linkage_type = Some(family.pedigree.clone());
-            links[family.child].push(link);
+            let mut link = ChildLink::new(xref);
+            link.detail_mut().pedigree = Some(Phrased::new(family.pedigree.clone()));
+            child_of[family.child].push(link);
         }
 
+        data.individuals.reserve(self.persons.len());
         for (id, person) in self.persons.iter().enumerate() {
-            data.individuals
-                .push(self.individual(id, person, std::mem::take(&mut links[id])));
+            let mut individual = self.individual(&ids, id, person);
+            individual.spouse_of = std::mem::take(&mut spouse_of[id]).into();
+            individual.child_of = std::mem::take(&mut child_of[id]).into();
+            data.individuals.push(individual);
         }
+        data.families.reserve(self.families.len() + implied.len());
         for (id, family) in self.families.iter().enumerate() {
-            data.families.push(self.family(id, family));
+            data.families.push(self.family(&ids, id, family));
         }
         for (i, family) in implied.iter().enumerate() {
-            let xref = family_xref(self.families.len() + i);
+            let xref = ids.family(self.families.len() + i);
             if family.pedigree == Pedigree::Adopted {
                 data.individuals[family.child]
                     .events
-                    .push(adoption_event(&xref, family));
+                    .push(adoption_event(xref, family));
             }
-            data.families.push(GedFamily {
+            let partner = |who: Option<PersonId>| who.map(|p| IndividualRef::new(ids.person(p)));
+            data.families.push(Family {
                 xref: Some(xref),
-                individual1: family.father.map(individual_xref),
-                individual2: family.mother.map(individual_xref),
-                children: vec![individual_xref(family.child)],
-                sources: citations(family.sources),
-                ..GedFamily::default()
+                husband: partner(family.father),
+                wife: partner(family.mother),
+                children: vec![IndividualRef::new(ids.person(family.child))],
+                citations: citations(family.sources),
+                ..Family::default()
             });
         }
 
         for page in &self.pages {
-            data.custom_data.push(Box::new(page_tag(TAG_PAGE, page)));
+            data.extra.push(page_tag(&ids, ids.page, page));
         }
         for wizard in &self.wizard_notes {
-            data.custom_data
-                .push(Box::new(page_tag(TAG_WIZARD, wizard)));
+            data.extra.push(page_tag(&ids, ids.wizard, wizard));
         }
 
         data
     }
 
-    fn individual(&self, id: PersonId, person: &Person, families: Vec<FamilyLink>) -> Individual {
+    fn individual(&self, ids: &Ids, id: PersonId, person: &Person) -> Individual {
         let mut individual = Individual {
-            xref: Some(individual_xref(id)),
-            families,
+            xref: Some(ids.person(id)),
+            names: names(person),
+            sex: gender(person.sex),
+            notes: notes(&person.notes),
+            citations: citations(&person.sources),
             ..Individual::default()
         };
-
-        individual.names = names(person);
-        individual.sex = gender(person.sex);
-        individual.notes = notes(&person.notes);
-        individual.source = citations(&person.sources);
-        individual.events = self.life_events(id, person);
-        individual.attributes = attributes(person);
+        individual.events = self.life_events(ids, id, person);
+        individual.events.extend(attributes(person));
         // Only the `rel` relations go on the individual. Witnesses of `pevt` events stay
         // nested in the event they attended (see `event_detail`), as GeneWeb's own
         // `gwb2ged` writes them: a second, individual-level copy said nothing about which
         // event it was, so a reader attaching it to some event of its own choosing turned
         // a witness of a death into a witness of a baptism, next to the correct one.
-        individual.associations = self.associations(person);
+        let associations = self.associations(ids, person);
+        if !associations.is_empty() {
+            individual.detail_mut().associations = associations;
+        }
 
         // A portrait is a standard GEDCOM multimedia object, not just a custom tag.
         if !person.image.is_empty() {
-            individual.multimedia.push(multimedia(&person.image));
+            individual
+                .detail_mut()
+                .multimedia
+                .push(multimedia(&person.image));
         }
 
         if person.occ != 0 {
             individual
-                .custom_data
-                .push(Box::new(custom(TAG_OCCURRENCE, &person.occ.to_string())));
+                .extra
+                .push(custom(ids.occurrence, &person.occ.to_string()));
         }
         if let Some(label) = access_label(person.access) {
-            individual
-                .custom_data
-                .push(Box::new(custom(TAG_ACCESS, label)));
+            individual.extra.push(custom(ids.access, label));
         }
         // What GEDCOM itself can say about it: a person hidden from the public is
         // `RESN confidential`. `_GWACCESS` keeps the exact GeneWeb setting.
         if matches!(person.access, Access::Private | Access::SemiPublic) {
-            individual.restriction = Some("confidential".to_owned());
+            individual.detail_mut().restriction = Some(EnumList(vec![Restriction::Confidential]));
         }
         if !person.image.is_empty() {
-            individual
-                .custom_data
-                .push(Box::new(custom(TAG_IMAGE, &person.image)));
+            individual.extra.push(custom(ids.image, &person.image));
         }
 
         individual
@@ -460,9 +482,8 @@ impl GwDatabase {
     /// A `pevt` block may restate an event the person's own line already carries. The
     /// `gwplus` rule is that the structured event wins, so a life event that also appears
     /// in the block is emitted once, from the block.
-    fn life_events(&self, id: PersonId, person: &Person) -> Vec<Detail> {
+    fn life_events(&self, ids: &Ids, id: PersonId, person: &Person) -> Vec<Event> {
         use crate::model::event::PersonEventName as P;
-        use ged_io::types::event::Event as E;
         let mut events = Vec::new();
 
         let superseded = |kind: &P| person.events.iter().any(|e| &e.name == kind);
@@ -477,10 +498,10 @@ impl GwDatabase {
                 || !person.birth_src.is_empty()
                 || !person.birth_note.is_empty())
         {
-            let mut d = detail(E::Birth);
+            let mut d = Event::new(EventKind::Birth);
             d.date = person.birth.as_ref().map(date::to_gedcom);
             d.place = place(&person.birth_place);
-            d.notes = notes(&person.birth_note);
+            set_notes(&mut d, &person.birth_note);
             d.citations = citations(&person.birth_src);
             events.push(d);
         }
@@ -491,17 +512,17 @@ impl GwDatabase {
                 || !person.baptism_src.is_empty()
                 || !person.baptism_note.is_empty())
         {
-            let mut d = detail(E::Baptism);
+            let mut d = Event::new(EventKind::Baptism);
             d.date = person.baptism.as_ref().map(date::to_gedcom);
             d.place = place(&person.baptism_place);
-            d.notes = notes(&person.baptism_note);
+            set_notes(&mut d, &person.baptism_note);
             d.citations = citations(&person.baptism_src);
             events.push(d);
         }
 
-        if let Some(mut d) = death_event(&person.death).filter(|_| !death_superseded) {
+        if let Some(mut d) = death_event(ids, &person.death).filter(|_| !death_superseded) {
             d.place = place(&person.death_place);
-            d.notes = notes(&person.death_note);
+            set_notes(&mut d, &person.death_note);
             d.citations = citations(&person.death_src);
             events.push(d);
         }
@@ -509,14 +530,14 @@ impl GwDatabase {
         let burial = match &person.burial {
             _ if burial_superseded => None,
             Burial::Unknown => None,
-            Burial::Buried(date) => Some((E::Burial, date)),
-            Burial::Cremated(date) => Some((E::Cremation, date)),
+            Burial::Buried(date) => Some((EventKind::Burial, date)),
+            Burial::Cremated(date) => Some((EventKind::Cremation, date)),
         };
         if let Some((kind, when)) = burial {
-            let mut d = detail(kind);
+            let mut d = Event::new(kind);
             d.date = when.as_ref().map(date::to_gedcom);
             d.place = place(&person.burial_place);
-            d.notes = notes(&person.burial_note);
+            set_notes(&mut d, &person.burial_note);
             d.citations = citations(&person.burial_src);
             events.push(d);
         }
@@ -525,6 +546,7 @@ impl GwDatabase {
             let mapping = event::person_event(&gw_event.name);
             let witnesses = self.person_event_witnesses(id, i);
             events.push(Self::event_detail(
+                ids,
                 gw_event,
                 mapping,
                 &gw_event.name.tag(),
@@ -536,9 +558,8 @@ impl GwDatabase {
         // way to say how the person died: the line's reason goes on the `pevt` death.
         if death_superseded {
             if let Some(reason) = death_reason(&person.death) {
-                if let Some(d) = events.iter_mut().find(|d| d.event == E::Death) {
-                    d.custom_data
-                        .push(Box::new(custom(TAG_DEATH_REASON, reason)));
+                if let Some(d) = events.iter_mut().find(|d| d.kind == EventKind::Death) {
+                    d.extra.push(custom(ids.death_reason, reason));
                 }
             }
         }
@@ -546,32 +567,37 @@ impl GwDatabase {
         events
     }
 
-    /// Shapes a `gwplus` event, personal or familial, into a GEDCOM event detail.
+    /// Shapes a `gwplus` event, personal or familial, into a GEDCOM event.
     fn event_detail<N>(
+        ids: &Ids,
         gw_event: &GwEvent<N>,
         mapping: event::EventMapping,
         original_tag: &str,
         witnesses: &[ResolvedWitness],
-    ) -> Detail {
-        let mut d = detail(mapping.event.clone());
-        d.event_type = mapping.event_type;
+    ) -> Event {
+        let mut d = Event::new(mapping.event);
         d.date = gw_event.date.as_ref().map(date::to_gedcom);
         d.place = place(&gw_event.place);
-        d.notes = notes(&gw_event.note);
         d.citations = citations(&gw_event.source);
-        d.cause = (!gw_event.cause.is_empty()).then(|| gw_event.cause.clone());
-        d.associations = witness_associations(witnesses);
+        set_notes(&mut d, &gw_event.note);
+        let associations = witness_associations(ids, witnesses);
+        if !associations.is_empty() {
+            d.detail_mut().associations = associations;
+        }
+        if !gw_event.cause.is_empty() {
+            d.detail_mut().cause = Some(Text::from(gw_event.cause.as_str()));
+        }
         // An event that became a generic `EVEN` has lost which `.gw` tag it came from.
         // Recording the tag keeps the mapping reversible.
-        if d.event_type.is_some() {
-            d.custom_data
-                .push(Box::new(custom(TAG_EVENT, original_tag)));
+        if let Some(label) = mapping.event_type {
+            d.detail_mut().classification = Some(Text::from(label));
+            d.extra.push(custom(ids.event, original_tag));
         }
         d
     }
 
     /// The relations of a `rel` block, as GEDCOM associations.
-    fn associations(&self, person: &Person) -> Vec<Association> {
+    fn associations(&self, ids: &Ids, person: &Person) -> Vec<Association> {
         // Only the relations GEDCOM has no structure for: adoptive and foster parents
         // become a family of their own (see `implied_families`). Godparents are labelled
         // as `gwb2ged` labels them, `GODF` and `GODM`.
@@ -591,17 +617,7 @@ impl GwDatabase {
                     (other, _) => relation_type_label(other),
                 };
                 if let Some(id) = self.lookup(&who.key()) {
-                    out.push(Association {
-                        xref: individual_xref(id),
-                        relationship: Some(label.to_owned()),
-                        association_type: Some("INDI".to_owned()),
-                        role: None,
-                        role_phrase: None,
-                        phrase: None,
-                        sources: Vec::new(),
-                        notes: Vec::new(),
-                        custom_data: Vec::new(),
-                    });
+                    out.push(association(ids.person(id), label));
                 }
             }
         }
@@ -637,24 +653,20 @@ impl GwDatabase {
         out
     }
 
-    fn family(&self, id: FamilyId, family: &FamilyRecord) -> GedFamily {
-        use ged_io::types::event::Event as E;
-
-        let mut out = GedFamily {
-            xref: Some(family_xref(id)),
-            individual1: Some(individual_xref(family.father)),
-            individual2: Some(individual_xref(family.mother)),
+    fn family(&self, ids: &Ids, id: FamilyId, family: &FamilyRecord) -> Family {
+        let mut out = Family {
+            xref: Some(ids.family(id)),
+            husband: Some(IndividualRef::new(ids.person(family.father))),
+            wife: Some(IndividualRef::new(ids.person(family.mother))),
             children: family
                 .children
                 .iter()
-                .copied()
-                .map(individual_xref)
+                .map(|&child| IndividualRef::new(ids.person(child)))
                 .collect(),
-            ..GedFamily::default()
+            citations: citations(&family.sources),
+            notes: notes(&family.comment),
+            ..Family::default()
         };
-
-        out.sources = citations(&family.sources);
-        out.notes = notes(&family.comment);
 
         // As with personal events, a `fevt` entry supersedes what the `fam` line says
         // about the same thing rather than adding a second copy of it.
@@ -675,24 +687,36 @@ impl GwDatabase {
                 // there is nothing to hang their `ASSO` on.
                 || !family.witnesses.is_empty())
         {
-            let mut d = detail(union.event);
-            d.event_type = union.event_type;
+            let mut d = Event::new(union.event);
+            if let Some(label) = union.event_type {
+                d.detail_mut().classification = Some(Text::from(label));
+            }
             d.date = family.marriage.as_ref().map(date::to_gedcom);
             d.place = place(&family.marriage_place);
-            d.notes = notes(&family.marriage_note);
+            set_notes(&mut d, &family.marriage_note);
             d.citations = citations(&family.marriage_src);
-            d.associations = family_witness_associations(family);
+            let witnesses = witness_associations(ids, &family.witnesses);
+            if !witnesses.is_empty() {
+                d.detail_mut().associations = witnesses;
+            }
             out.events.push(d);
         }
 
         let ending = match &family.divorce {
-            Divorce::Divorced(when) if !divorce_superseded => Some((E::Divorce, when)),
-            Divorce::Separated(when) if !separation_superseded => Some((E::Separated, when)),
+            Divorce::Divorced(when) if !divorce_superseded => {
+                Some((event::family_event(&F::Divorce), when))
+            }
+            Divorce::Separated(when) if !separation_superseded => {
+                Some((event::family_event(&F::Separated), when))
+            }
             // Either the union never ended, or a `fevt` entry already says how it did.
             _ => None,
         };
-        if let Some((kind, when)) = ending {
-            let mut d = detail(kind);
+        if let Some((mapping, when)) = ending {
+            let mut d = Event::new(mapping.event);
+            if let Some(label) = mapping.event_type {
+                d.detail_mut().classification = Some(Text::from(label));
+            }
             d.date = when.as_ref().map(date::to_gedcom);
             out.events.push(d);
         }
@@ -701,6 +725,7 @@ impl GwDatabase {
             let mapping = event::family_event(&gw_event.name);
             let witnesses = self.family_event_witnesses(id, i);
             out.events.push(Self::event_detail(
+                ids,
                 gw_event,
                 mapping,
                 &gw_event.name.tag(),
@@ -711,18 +736,26 @@ impl GwDatabase {
         // A `fevt` marriage supersedes the `fam` line's union, but the witnesses
         // written on that line still attended it: they join the event's own.
         if marriage_superseded {
-            if let Some(marriage) = out.events.iter_mut().find(|d| d.event == E::Marriage) {
-                for witness in family_witness_associations(family) {
-                    if !marriage.associations.iter().any(|a| a.xref == witness.xref) {
-                        marriage.associations.push(witness);
+            if let Some(marriage) = out
+                .events
+                .iter_mut()
+                .find(|d| d.kind == EventKind::Marriage)
+            {
+                for witness in witness_associations(ids, &family.witnesses) {
+                    let known = marriage
+                        .detail()
+                        .associations
+                        .iter()
+                        .any(|a| a.individual == witness.individual);
+                    if !known {
+                        marriage.detail_mut().associations.push(witness);
                     }
                 }
             }
         }
 
         if let Some(label) = relation_kind_label(family.relation) {
-            out.custom_data
-                .push(Box::new(custom(TAG_RELATION_KIND, label)));
+            out.extra.push(custom(ids.relation_kind, label));
         }
 
         out
@@ -731,12 +764,10 @@ impl GwDatabase {
 
 fn header() -> Header {
     Header {
-        source: Some(HeadSour {
-            value: Some("GENEWEB".to_owned()),
-            version: None,
-            name: Some(concat!("geneweb ", env!("CARGO_PKG_VERSION")).to_owned()),
-            corporation: None,
-            data: None,
+        source: Some(HeaderSource {
+            product: Text::from("GENEWEB"),
+            name: Some(Text::from(concat!("geneweb ", env!("CARGO_PKG_VERSION")))),
+            ..HeaderSource::default()
         }),
         ..Header::default()
     }
@@ -744,8 +775,6 @@ fn header() -> Header {
 
 /// Builds the `NAME` records: the primary one, then every alias GeneWeb records.
 fn names(person: &Person) -> Vec<Name> {
-    use ged_io::types::individual::name::NameType;
-
     let mut names = vec![name_record(
         gedcom_name(&person.first_name, &person.surname),
         &person.first_name,
@@ -753,11 +782,11 @@ fn names(person: &Person) -> Vec<Name> {
         None,
     )];
 
-    // A nickname belongs on the primary name. GEDCOM gives a name one `NICK`, so each
-    // further nickname rides on a name of its own rather than being dropped.
+    // A nickname belongs on the primary name. Each further nickname rides on a name of
+    // its own, as a GEDCOM reader expects one `NICK` a name.
     let mut nicknames = person.qualifiers.iter();
     if let Some(nickname) = nicknames.next() {
-        names[0].nickname = Some(nickname.clone());
+        add_nickname(&mut names[0], nickname);
     }
     for nickname in nicknames {
         let mut name = name_record(
@@ -766,7 +795,7 @@ fn names(person: &Person) -> Vec<Name> {
             &person.surname,
             Some(NameType::Aka),
         );
-        name.nickname = Some(nickname.clone());
+        add_nickname(&mut name, nickname);
         names.push(name);
     }
 
@@ -800,60 +829,35 @@ fn names(person: &Person) -> Vec<Name> {
     names
 }
 
-/// The witnesses of a family line, as GEDCOM associations.
-fn family_witness_associations(family: &FamilyRecord) -> Vec<Association> {
-    witness_associations(&family.witnesses)
-}
-
-/// Turns resolved witnesses into GEDCOM associations pointing at each witness.
-fn witness_associations(witnesses: &[ResolvedWitness]) -> Vec<Association> {
-    witnesses
-        .iter()
-        .map(|w| Association {
-            xref: individual_xref(w.person),
-            relationship: Some(event::witness_relationship(w.kind).to_owned()),
-            association_type: Some("INDI".to_owned()),
-            role: None,
-            role_phrase: None,
-            phrase: None,
-            sources: Vec::new(),
-            notes: Vec::new(),
-            custom_data: Vec::new(),
-        })
-        .collect()
-}
-
-fn family_link(xref: &str, kind: FamilyLinkType) -> FamilyLink {
-    FamilyLink {
-        xref: xref.to_owned(),
-        family_link_type: kind,
-        pedigree_linkage_type: None,
-        child_linkage_status: None,
-        adopted_by: None,
-        notes: Vec::new(),
-        custom_data: Vec::new(),
+/// An association with an individual, its relation in words (`RELA`).
+fn association(individual: XrefId, relation: &str) -> Association {
+    Association {
+        individual: Some(individual),
+        relation: Some(Text::from(relation)),
+        ..Association::default()
     }
 }
 
-fn gender(sex: Sex) -> Option<Gender> {
-    let value = match sex {
-        Sex::Male => GenderType::Male,
-        Sex::Female => GenderType::Female,
+/// Turns resolved witnesses into GEDCOM associations pointing at each witness.
+fn witness_associations(ids: &Ids, witnesses: &[ResolvedWitness]) -> Vec<Association> {
+    witnesses
+        .iter()
+        .map(|w| association(ids.person(w.person), event::witness_relationship(w.kind)))
+        .collect()
+}
+
+fn gender(sex: Sex) -> Option<GedSex> {
+    match sex {
+        Sex::Male => Some(GedSex::Male),
+        Sex::Female => Some(GedSex::Female),
         // GeneWeb's "neuter" means unrecorded, not non-binary.
-        Sex::Neuter => return None,
-    };
-    Some(Gender {
-        value,
-        fact: None,
-        sources: Vec::new(),
-        custom_data: Vec::new(),
-    })
+        Sex::Neuter => None,
+    }
 }
 
 /// The death event, if the person is recorded as dead.
-fn death_event(death: &Death) -> Option<Detail> {
-    use ged_io::types::event::Event as E;
-    let mut d = detail(E::Death);
+fn death_event(ids: &Ids, death: &Death) -> Option<Event> {
+    let mut d = Event::new(EventKind::Death);
     match death {
         // Nothing to record: alive, or simply unknown.
         Death::NotDead | Death::DontKnowIfDead => return None,
@@ -862,12 +866,11 @@ fn death_event(death: &Death) -> Option<Detail> {
         // GeneWeb draws between these three goes in `_GWDEATH`, since GEDCOM has no
         // vocabulary for it.
         Death::DeadDontKnowWhen | Death::DeadYoung | Death::OfCourseDead => {
-            d.value = Some("Y".to_owned());
+            d.value = Text::from("Y");
         }
     }
     if let Some(reason) = death_reason(death) {
-        d.custom_data
-            .push(Box::new(custom(TAG_DEATH_REASON, reason)));
+        d.extra.push(custom(ids.death_reason, reason));
     }
     Some(d)
 }
@@ -882,100 +885,56 @@ fn death_reason(death: &Death) -> Option<&'static str> {
     }
 }
 
-/// A multimedia object pointing at a portrait file.
-fn multimedia(path: &str) -> ged_io::types::multimedia::Multimedia {
-    use ged_io::types::multimedia::{file::Reference, Multimedia};
-    Multimedia {
-        file: Some(Reference {
-            value: Some(path.to_owned()),
-            ..Reference::default()
-        }),
-        ..Multimedia::default()
+/// A multimedia link holding the path of a portrait file.
+fn multimedia(path: &str) -> MultimediaLink {
+    MultimediaLink {
+        files: std::iter::once(File {
+            path: Text::from(path),
+            ..File::default()
+        })
+        .collect(),
+        ..MultimediaLink::default()
     }
 }
 
-fn attributes(person: &Person) -> Vec<AttributeDetail> {
+/// The occupation and the titles, as GEDCOM attributes.
+fn attributes(person: &Person) -> Vec<Event> {
     let mut out = Vec::new();
     if !person.occupation.is_empty() {
-        out.push(attribute(
-            IndividualAttribute::Occupation,
-            &person.occupation,
-        ));
+        out.push(attribute(EventKind::Occupation, &person.occupation));
     }
     for title in &person.titles {
-        let mut a = attribute(IndividualAttribute::NobilityTypeTitle, &title_value(title));
+        let mut a = attribute(EventKind::Title, &title_value(title));
         a.date = title_period(title);
-        a.notes = notes(title_holder(title, person));
+        set_notes(&mut a, title_holder(title, person));
         out.push(a);
     }
     out
 }
 
-fn attribute(kind: IndividualAttribute, value: &str) -> AttributeDetail {
-    AttributeDetail {
-        attribute: kind,
-        value: Some(value.to_owned()),
-        place: None,
-        date: None,
-        sources: Vec::new(),
-        notes: Vec::new(),
-        attribute_type: None,
-        restriction: None,
-        age: None,
-        address: None,
-        cause: None,
-        agency: None,
-        multimedia: Vec::new(),
-        phone: Vec::new(),
-        email: Vec::new(),
-        fax: Vec::new(),
-        website: Vec::new(),
-        associations: Vec::new(),
-        custom_data: Vec::new(),
+fn attribute(kind: EventKind, value: &str) -> Event {
+    Event {
+        value: Text::from(value),
+        ..Event::new(kind)
     }
 }
 
-fn page_tag(tag: &str, page: &crate::database::Page) -> UserDefinedTag {
-    UserDefinedTag {
-        xref: None,
-        tag: tag.to_owned(),
-        value: (!page.name.is_empty()).then(|| page.name.clone()),
-        children: vec![Box::new(text_tag("NOTE", &page.text))],
+/// An extended page or a wizard note: its name, and its text as a note, whose line
+/// breaks the writer turns into `CONT` lines.
+fn page_tag(ids: &Ids, tag: TagId, page: &crate::database::Page) -> Node {
+    let mut node = Node::new(tag);
+    if !page.name.is_empty() {
+        node.payload = Value::Text(Text::from(page.name.as_str()));
     }
-}
-
-/// A user-defined tag holding text over several lines: its first line, and one `CONT`
-/// substructure per further line.
-///
-/// This works around `ged_io` 0.17's writer, which writes a user-defined tag's value
-/// verbatim on the tag's line, whereas it splits a note's text over `CONT` lines: a
-/// line break in the value starts a line with no level number, which `ged_io`'s own
-/// parser rejects ("Expected digit for level number"). That parser keeps the `CONT`
-/// lines under a user-defined tag as substructures, so this is also the shape it reads
-/// back.
-///
-/// Lines longer than GEDCOM 5.5.1's 255 characters are not cut with `CONC`: `ged_io`
-/// writes and reads them whole.
-fn text_tag(tag: &str, text: &str) -> UserDefinedTag {
-    let mut lines = text.split('\n');
-    UserDefinedTag {
-        xref: None,
-        tag: tag.to_owned(),
-        value: lines
-            .next()
-            .filter(|line| !line.is_empty())
-            .map(str::to_owned),
-        children: lines
-            .map(|line| {
-                Box::new(UserDefinedTag {
-                    xref: None,
-                    tag: "CONT".to_owned(),
-                    value: (!line.is_empty()).then(|| line.to_owned()),
-                    children: Vec::new(),
-                })
-            })
-            .collect(),
-    }
+    node.children.push(Node {
+        payload: if page.text.is_empty() {
+            Value::None
+        } else {
+            Value::Text(Text::from(page.text.as_str()))
+        },
+        ..Node::new(ids.note)
+    });
+    node
 }
 
 /// Silences the unused-import warning for types referenced only in documentation.
@@ -984,12 +943,62 @@ const _: Option<(&PersonEvent, &FamilyEvent, WitnessKind)> = None;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ged_io::types::event::Event as E;
+    use ged_io::model::NoteContent;
 
-    fn convert(input: &str) -> GedcomData {
+    fn convert(input: &str) -> Dataset {
         GwDatabase::read(input.as_bytes(), "t.gw")
             .expect("parses")
             .to_gedcom()
+    }
+
+    /// The characters of a text of `data`.
+    fn text(data: &Dataset, text: &Text) -> String {
+        text.to_str(data).into_owned()
+    }
+
+    /// The identifier of a record or the target of a pointer.
+    fn xref(data: &Dataset, id: Option<XrefId>) -> Option<&str> {
+        id.map(|id| data.store().xref(id))
+    }
+
+    /// The tag and text of each extension structure.
+    fn extensions<'d>(data: &'d Dataset, nodes: &'d [Node]) -> Vec<(&'d str, Option<String>)> {
+        nodes
+            .iter()
+            .map(|n| {
+                let value = match &n.payload {
+                    Value::Text(t) => Some(text(data, t)),
+                    _ => None,
+                };
+                (data.store().tag(n.tag), value)
+            })
+            .collect()
+    }
+
+    fn note_texts(data: &Dataset, notes: &[Note]) -> Vec<String> {
+        notes
+            .iter()
+            .filter_map(|n| match &n.content {
+                NoteContent::Text(t) => Some(text(data, t)),
+                NoteContent::Shared(_) => None,
+            })
+            .collect()
+    }
+
+    fn event_of<'i>(individual: &'i Individual, kind: &EventKind) -> &'i Event {
+        individual
+            .events_of(kind.clone())
+            .next()
+            .unwrap_or_else(|| panic!("a {kind:?}"))
+    }
+
+    fn associated<'d>(data: &'d Dataset, event: &Event) -> Vec<&'d str> {
+        event
+            .detail()
+            .associations
+            .iter()
+            .filter_map(|a| xref(data, a.individual))
+            .collect()
     }
 
     #[test]
@@ -1004,19 +1013,14 @@ mod tests {
             "fam Poe Paul + Moe Mary\n",
         ));
         let john = &data.individuals[0];
-        let death = john
-            .events
-            .iter()
-            .find(|e| e.event == E::Death)
-            .expect("a death");
-        assert_eq!(death.associations.len(), 1);
-        assert_eq!(death.associations[0].xref, "@I3@");
+        let death = event_of(john, &EventKind::Death);
+        assert_eq!(associated(&data, death), ["@I3@"]);
         // The witness is stated once, on the event, and nowhere else.
-        assert_eq!(john.associations.len(), 0);
+        assert_eq!(john.detail().associations.len(), 0);
         assert!(john
             .events
             .iter()
-            .all(|e| e.event == E::Death || e.associations.is_empty()));
+            .all(|e| e.kind == EventKind::Death || e.detail().associations.is_empty()));
     }
 
     #[test]
@@ -1026,63 +1030,95 @@ mod tests {
         assert_eq!(data.families.len(), 1);
 
         let family = &data.families[0];
-        assert_eq!(family.xref.as_deref(), Some("@F1@"));
-        assert_eq!(family.individual1.as_deref(), Some("@I1@"));
-        assert_eq!(family.individual2.as_deref(), Some("@I2@"));
-        assert_eq!(family.children, vec!["@I3@"]);
+        assert_eq!(xref(&data, family.xref), Some("@F1@"));
+        assert_eq!(xref(&data, family.husband_id()), Some("@I1@"));
+        assert_eq!(xref(&data, family.wife_id()), Some("@I2@"));
+        let children: Vec<_> = family
+            .children
+            .iter()
+            .filter_map(|c| xref(&data, c.individual))
+            .collect();
+        assert_eq!(children, ["@I3@"]);
     }
 
     #[test]
     fn names_use_gedcom_slash_syntax() {
         let data = convert("fam Dupont Jean + Martin Marie\n");
+        let name = &data.individuals[0].names[0];
+        assert_eq!(text(&data, &name.value), "Jean /Dupont/");
         assert_eq!(
-            data.individuals[0].names[0].value.as_deref(),
-            Some("Jean /Dupont/")
+            name.surname().map(|s| text(&data, s)).as_deref(),
+            Some("Dupont")
         );
         assert_eq!(
-            data.individuals[0].names[0].surname.as_deref(),
-            Some("Dupont")
+            name.given().map(|g| text(&data, g)).as_deref(),
+            Some("Jean")
         );
     }
 
     #[test]
     fn aliases_become_additional_name_records() {
         let data = convert("fam Dupont Jean {Jeannot} #salias Dupond (Le_Grand) 1900 + A B\n");
-        let names = &data.individuals[0].names;
-        let values: Vec<_> = names.iter().filter_map(|n| n.value.as_deref()).collect();
-        assert!(values.contains(&"Jean /Dupont/"));
-        assert!(values.contains(&"Le Grand /Dupont/"));
-        assert!(values.contains(&"Jeannot /Dupont/"));
-        assert!(values.contains(&"Jean /Dupond/"));
+        let values: Vec<_> = data.individuals[0]
+            .names
+            .iter()
+            .map(|n| text(&data, &n.value))
+            .collect();
+        assert!(values.iter().any(|v| v == "Jean /Dupont/"));
+        assert!(values.iter().any(|v| v == "Le Grand /Dupont/"));
+        assert!(values.iter().any(|v| v == "Jeannot /Dupont/"));
+        assert!(values.iter().any(|v| v == "Jean /Dupond/"));
+    }
+
+    fn nicknames(data: &Dataset, name: &Name) -> Vec<String> {
+        name.pieces_of(NamePieceKind::Nickname)
+            .map(|n| text(data, n))
+            .collect()
     }
 
     #[test]
     fn every_nickname_is_kept() {
         let data = convert("fam Doe John #nick Johnny #nick Jacko + Roe Jane\n");
         let names = &data.individuals[0].names;
-        assert_eq!(names[0].nickname.as_deref(), Some("Johnny"));
+        assert_eq!(nicknames(&data, &names[0]), ["Johnny"]);
         let second = names
             .iter()
-            .find(|n| n.nickname.as_deref() == Some("Jacko"))
+            .find(|n| nicknames(&data, n) == ["Jacko"])
             .expect("the second nickname");
-        assert_eq!(second.value.as_deref(), Some("John /Doe/"));
+        assert_eq!(text(&data, &second.value), "John /Doe/");
         assert_eq!(
-            second.name_type,
-            Some(ged_io::types::individual::name::NameType::Aka)
+            second.detail().kind.as_ref().map(|k| &k.value),
+            Some(&NameType::Aka)
+        );
+    }
+
+    #[test]
+    fn a_nickname_is_a_piece_between_the_given_name_and_the_surname() {
+        let data = convert("fam Doe John #nick Johnny + Roe Jane\n");
+        let kinds: Vec<_> = data.individuals[0].names[0]
+            .pieces
+            .iter()
+            .map(|p| p.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                NamePieceKind::Given,
+                NamePieceKind::Nickname,
+                NamePieceKind::Surname
+            ]
         );
     }
 
     #[test]
     fn parents_get_a_spouse_link_and_children_a_child_link() {
         let data = convert("fam Dupont Jean + Martin Marie\nbeg\n- m Paul\nend\n");
-        assert_eq!(
-            data.individuals[0].families[0].family_link_type,
-            FamilyLinkType::Spouse
-        );
-        assert_eq!(
-            data.individuals[2].families[0].family_link_type,
-            FamilyLinkType::Child
-        );
+        let father = &data.individuals[0];
+        assert_eq!(xref(&data, father.spouse_of[0].family), Some("@F1@"));
+        assert!(father.child_of.is_empty());
+        let child = &data.individuals[2];
+        assert_eq!(xref(&data, child.child_of[0].family), Some("@F1@"));
+        assert!(child.spouse_of.is_empty());
     }
 
     #[test]
@@ -1091,72 +1127,51 @@ mod tests {
             "fam Doe John #apriv + Roe Jane #semipub\n",
             "fam Poe Paul #apubl + Moe Mary\n",
         ));
-        let restriction = |i: usize| data.individuals[i].restriction.as_deref();
-        assert_eq!(restriction(0), Some("confidential"));
-        assert_eq!(restriction(1), Some("confidential"));
+        let restriction = |i: usize| data.individuals[i].detail().restriction.clone();
+        let confidential = Some(EnumList(vec![Restriction::Confidential]));
+        assert_eq!(restriction(0), confidential);
+        assert_eq!(restriction(1), confidential);
         assert_eq!(restriction(2), None);
         assert_eq!(restriction(3), None);
     }
 
     #[test]
     fn sex_is_written_only_when_recorded() {
-        let data = convert("fam Dupont Jean + Martin Marie\n");
-        assert_eq!(
-            data.individuals[0].sex.as_ref().map(|g| g.value.clone()),
-            Some(GenderType::Male)
-        );
-        assert_eq!(
-            data.individuals[1].sex.as_ref().map(|g| g.value.clone()),
-            Some(GenderType::Female)
-        );
+        let data = convert("fam Dupont Jean + Martin Marie\nbeg\n- Paul\nend\n");
+        assert_eq!(data.individuals[0].sex, Some(GedSex::Male));
+        assert_eq!(data.individuals[1].sex, Some(GedSex::Female));
+        assert_eq!(data.individuals[2].sex, None);
     }
 
     #[test]
     fn life_events_carry_dates_places_and_sources() {
         let data =
             convert("fam Dupont Jean 7/9/1830 #bp Reims #bs acte 12/5/1900 #dp Lyon + A B\n");
-        let events = &data.individuals[0].events;
-        let birth = events
-            .iter()
-            .find(|e| e.event == E::Birth)
-            .expect("a birth");
+        let individual = &data.individuals[0];
+        let birth = event_of(individual, &EventKind::Birth);
         assert_eq!(
-            birth.date.as_ref().unwrap().value.as_deref(),
-            Some("07 SEP 1830")
+            text(&data, &birth.date.as_ref().unwrap().value),
+            "07 SEP 1830"
         );
-        assert_eq!(
-            birth.place.as_ref().unwrap().value.as_deref(),
-            Some("Reims")
-        );
+        assert_eq!(text(&data, &birth.place.as_ref().unwrap().name), "Reims");
         assert_eq!(birth.citations.len(), 1);
-        let death = events
-            .iter()
-            .find(|e| e.event == E::Death)
-            .expect("a death");
-        assert_eq!(death.place.as_ref().unwrap().value.as_deref(), Some("Lyon"));
+        let death = event_of(individual, &EventKind::Death);
+        assert_eq!(text(&data, &death.place.as_ref().unwrap().name), "Lyon");
     }
 
     #[test]
     fn a_living_person_gets_no_death_event() {
         let data = convert("fam Dupont Jean 1990 + A B\n");
-        assert!(!data.individuals[0]
-            .events
-            .iter()
-            .any(|e| e.event == E::Death));
+        assert!(data.individuals[0].death().is_none());
     }
 
     #[test]
     fn occupations_and_titles_become_attributes() {
         let data = convert("fam Dupont Jean [*:duc:Bretagne:::] #occu Marchand 1900 + A B\n");
-        let attrs = &data.individuals[0].attributes;
-        assert!(attrs
-            .iter()
-            .any(|a| a.attribute == IndividualAttribute::Occupation
-                && a.value.as_deref() == Some("Marchand")));
-        assert!(attrs
-            .iter()
-            .any(|a| a.attribute == IndividualAttribute::NobilityTypeTitle
-                && a.value.as_deref() == Some("duc, Bretagne")));
+        let individual = &data.individuals[0];
+        let value = |kind| text(&data, &event_of(individual, &kind).value);
+        assert_eq!(value(EventKind::Occupation), "Marchand");
+        assert_eq!(value(EventKind::Title), "duc, Bretagne");
     }
 
     #[test]
@@ -1165,71 +1180,50 @@ mod tests {
             "fam Doe John [Samplename:Count:Sampleshire:1800:1810:2] ",
             "[:Baron:Sampleton:::] + A B\n",
         ));
-        let titles: Vec<_> = data.individuals[0]
-            .attributes
-            .iter()
-            .filter(|a| a.attribute == IndividualAttribute::NobilityTypeTitle)
-            .collect();
+        let titles: Vec<_> = data.individuals[0].events_of(EventKind::Title).collect();
         assert_eq!(titles.len(), 2);
 
         let count = titles[0];
-        assert_eq!(count.value.as_deref(), Some("Count, Sampleshire, 2"));
+        assert_eq!(text(&data, &count.value), "Count, Sampleshire, 2");
         // The domain is part of the title, not a place.
         assert!(count.place.is_none());
         // Both ends of the period are kept.
         assert_eq!(
-            count.date.as_ref().and_then(|d| d.value.as_deref()),
-            Some("FROM 1800 TO 1810")
+            text(&data, &count.date.as_ref().unwrap().value),
+            "FROM 1800 TO 1810"
         );
-        assert_eq!(
-            count.notes.first().and_then(|n| n.value.as_deref()),
-            Some("Samplename")
-        );
+        assert_eq!(note_texts(&data, &count.detail().notes), ["Samplename"]);
 
         let baron = titles[1];
-        assert_eq!(baron.value.as_deref(), Some("Baron, Sampleton"));
-        assert!(baron.date.is_none() && baron.notes.is_empty() && baron.place.is_none());
+        assert_eq!(text(&data, &baron.value), "Baron, Sampleton");
+        assert!(baron.date.is_none() && baron.detail.is_none() && baron.place.is_none());
     }
 
     #[test]
     fn geneweb_only_concepts_ride_on_custom_tags() {
         let data = convert("fam Dupont Jean.2 #image p.jpg #apriv 1900 + A B\n");
-        let portrait = data.individuals[0]
+        let individual = &data.individuals[0];
+        let portrait = individual
+            .detail()
             .multimedia
             .first()
             .expect("the portrait becomes GEDCOM multimedia");
-        assert_eq!(
-            portrait
-                .file
-                .as_ref()
-                .and_then(|file| file.value.as_deref()),
-            Some("p.jpg")
-        );
-        let tags: Vec<_> = data.individuals[0]
-            .custom_data
-            .iter()
-            .map(|t| (t.tag.as_str(), t.value.as_deref()))
-            .collect();
-        assert!(tags.contains(&(TAG_OCCURRENCE, Some("2"))));
-        assert!(tags.contains(&(TAG_ACCESS, Some("private"))));
-        assert!(tags.contains(&(TAG_IMAGE, Some("p.jpg"))));
+        assert_eq!(text(&data, &portrait.files[0].path), "p.jpg");
+        let tags = extensions(&data, &individual.extra);
+        assert!(tags.contains(&(TAG_OCCURRENCE, Some("2".to_owned()))));
+        assert!(tags.contains(&(TAG_ACCESS, Some("private".to_owned()))));
+        assert!(tags.contains(&(TAG_IMAGE, Some("p.jpg".to_owned()))));
     }
 
     /// The death reason and the note of a death event, as converted.
-    fn death_reason_and_note(data: &GedcomData) -> (Vec<String>, Vec<String>) {
-        let death = data.individuals[0]
-            .events
-            .iter()
-            .find(|e| e.event == E::Death)
-            .expect("a death");
-        let reasons = death
-            .custom_data
-            .iter()
-            .filter(|t| t.tag == TAG_DEATH_REASON)
-            .filter_map(|t| t.value.clone())
+    fn death_reason_and_note(data: &Dataset) -> (Vec<String>, Vec<String>) {
+        let death = data.individuals[0].death().expect("a death");
+        let reasons = extensions(data, &death.extra)
+            .into_iter()
+            .filter(|(tag, _)| *tag == TAG_DEATH_REASON)
+            .filter_map(|(_, value)| value)
             .collect();
-        let notes = death.notes.iter().filter_map(|n| n.value.clone()).collect();
-        (reasons, notes)
+        (reasons, note_texts(data, &death.detail().notes))
     }
 
     #[test]
@@ -1255,12 +1249,7 @@ mod tests {
     #[test]
     fn the_death_reason_survives_a_pevt_death() {
         let data = convert("fam Doe John k1900 + Roe Jane\npevt Doe John\n#deat 1900\nend pevt\n");
-        let deaths: Vec<_> = data.individuals[0]
-            .events
-            .iter()
-            .filter(|e| e.event == E::Death)
-            .collect();
-        assert_eq!(deaths.len(), 1);
+        assert_eq!(data.individuals[0].events_of(EventKind::Death).count(), 1);
         assert_eq!(
             death_reason_and_note(&data),
             (vec!["killed".to_owned()], Vec::new())
@@ -1271,25 +1260,32 @@ mod tests {
     fn a_pacs_keeps_its_kind_because_gedcom_has_no_event_for_it() {
         let data = convert("fam A B + #pacs mf C D\n");
         let family = &data.families[0];
-        assert!(family
-            .custom_data
-            .iter()
-            .any(|t| t.tag == TAG_RELATION_KIND && t.value.as_deref() == Some("pacs")));
+        assert!(extensions(&data, &family.extra)
+            .contains(&(TAG_RELATION_KIND, Some("pacs".to_owned()))));
     }
 
     #[test]
     fn family_events_and_divorce() {
         let data = convert("fam A B +1850 -1860 C D\n");
         let events = &data.families[0].events;
-        assert!(events.iter().any(|e| e.event == E::Marriage));
+        assert!(events.iter().any(|e| e.kind == EventKind::Marriage));
         let divorce = events
             .iter()
-            .find(|e| e.event == E::Divorce)
+            .find(|e| e.kind == EventKind::Divorce)
             .expect("a divorce");
-        assert_eq!(
-            divorce.date.as_ref().unwrap().value.as_deref(),
-            Some("1860")
-        );
+        assert_eq!(text(&data, &divorce.date.as_ref().unwrap().value), "1860");
+    }
+
+    #[test]
+    fn a_separation_is_a_generic_event() {
+        let data = convert("fam A B +1850 #sep C D\n");
+        let separation = data.families[0]
+            .events
+            .iter()
+            .find(|e| e.kind == EventKind::Event)
+            .expect("a separation");
+        let label = separation.detail().classification.as_ref().unwrap();
+        assert_eq!(text(&data, label), "Separation");
     }
 
     #[test]
@@ -1300,15 +1296,9 @@ mod tests {
             "pevt Doe John\n#deat 1970\nwit m: Moe Mark 1850\nend pevt\n",
         ));
         let marriage = &data.families[0].events[0];
-        assert_eq!(marriage.associations.len(), 1);
-        assert_eq!(marriage.associations[0].xref, "@I3@");
-        let death = data.individuals[0]
-            .events
-            .iter()
-            .find(|e| e.event == E::Death)
-            .expect("a death");
-        assert_eq!(death.associations.len(), 1);
-        assert_eq!(death.associations[0].xref, "@I4@");
+        assert_eq!(associated(&data, marriage), ["@I3@"]);
+        let death = event_of(&data.individuals[0], &EventKind::Death);
+        assert_eq!(associated(&data, death), ["@I4@"]);
         // The witnesses are individuals of the file.
         assert_eq!(data.individuals.len(), 4);
     }
@@ -1316,12 +1306,10 @@ mod tests {
     #[test]
     fn generic_events_keep_their_label() {
         let data = convert("fam A B + C D\npevt A B\n#hosp 1914\nend pevt\n");
-        let event = data.individuals[0]
-            .events
-            .iter()
-            .find(|e| e.event == E::Event)
-            .expect("a generic event");
-        assert_eq!(event.event_type.as_deref(), Some("Hospitalization"));
+        let event = event_of(&data.individuals[0], &EventKind::Event);
+        let label = event.detail().classification.as_ref().unwrap();
+        assert_eq!(text(&data, label), "Hospitalization");
+        assert!(extensions(&data, &event.extra).contains(&(TAG_EVENT, Some("#hosp".to_owned()))));
     }
 
     #[test]
@@ -1330,9 +1318,8 @@ mod tests {
         let data = convert("fam Doe John + Roe Jane\nwit m: Poe Paul\nfam Poe Paul + Moe Mary\n");
         let union = &data.families[0].events;
         assert_eq!(union.len(), 1);
-        assert_eq!(union[0].event, E::Marriage);
-        assert_eq!(union[0].associations.len(), 1);
-        assert_eq!(union[0].associations[0].xref, "@I3@");
+        assert_eq!(union[0].kind, EventKind::Marriage);
+        assert_eq!(associated(&data, &union[0]), ["@I3@"]);
     }
 
     #[test]
@@ -1345,12 +1332,7 @@ mod tests {
         ));
         let events = &data.families[0].events;
         assert_eq!(events.len(), 1);
-        let xrefs: Vec<_> = events[0]
-            .associations
-            .iter()
-            .map(|a| a.xref.as_str())
-            .collect();
-        assert_eq!(xrefs, ["@I4@", "@I3@"]);
+        assert_eq!(associated(&data, &events[0]), ["@I4@", "@I3@"]);
     }
 
     #[test]
@@ -1362,14 +1344,10 @@ mod tests {
             "wit m: #godp Martin Marie\n",
             "end pevt\n",
         ));
-        let birth = data.individuals[0]
-            .events
-            .iter()
-            .find(|e| e.event == E::Birth)
-            .expect("a birth");
-        assert_eq!(birth.associations.len(), 1);
-        assert_eq!(birth.associations[0].xref, "@I2@");
-        assert_eq!(birth.associations[0].relationship.as_deref(), Some("GODP"));
+        let birth = event_of(&data.individuals[0], &EventKind::Birth);
+        assert_eq!(associated(&data, birth), ["@I2@"]);
+        let relation = birth.detail().associations[0].relation.as_ref().unwrap();
+        assert_eq!(text(&data, relation), "GODP");
     }
 
     #[test]
@@ -1382,9 +1360,10 @@ mod tests {
             "end\n",
         ));
         let labels: Vec<_> = data.individuals[0]
+            .detail()
             .associations
             .iter()
-            .map(|a| a.relationship.as_deref().unwrap_or_default())
+            .map(|a| text(&data, a.relation.as_ref().unwrap()))
             .collect();
         // Godparents are labelled as gwb2ged labels them.
         assert_eq!(labels, ["recognising parent", "GODF", "GODM"]);
@@ -1392,61 +1371,61 @@ mod tests {
 
     #[test]
     fn an_adoption_becomes_an_adoptive_family() {
-        use ged_io::types::individual::family_link::adopted::AdoptedByWhichParent;
-        use ged_io::types::individual::family_link::pedigree::Pedigree;
-
         let data = convert(concat!(
             "fam Doe John + Roe Jane\nbeg\n- h Paul 1930\nend\n",
             "rel Doe Paul\nbeg\n- adop fath: Poe Peter\nend\n",
         ));
         // Not an association: nothing to mistake for a witness.
-        assert!(data.individuals.iter().all(|i| i.associations.is_empty()));
+        assert!(data
+            .individuals
+            .iter()
+            .all(|i| i.detail().associations.is_empty()));
 
         let adoptive = &data.families[1];
-        assert_eq!(adoptive.xref.as_deref(), Some("@F2@"));
-        assert_eq!(adoptive.individual1.as_deref(), Some("@I4@"));
-        assert_eq!(adoptive.individual2, None);
-        assert_eq!(adoptive.children, ["@I3@"]);
+        assert_eq!(xref(&data, adoptive.xref), Some("@F2@"));
+        assert_eq!(xref(&data, adoptive.husband_id()), Some("@I4@"));
+        assert_eq!(adoptive.wife, None);
+        assert_eq!(xref(&data, adoptive.children[0].individual), Some("@I3@"));
 
         let paul = &data.individuals[2];
         let link = paul
-            .families
+            .child_of
             .iter()
-            .find(|l| l.xref == "@F2@")
+            .find(|l| xref(&data, l.family) == Some("@F2@"))
             .expect("a link to the adoptive family");
-        assert_eq!(link.pedigree_linkage_type, Some(Pedigree::Adopted));
-        let adop = paul
-            .events
-            .iter()
-            .find(|e| e.event == E::Adoption)
-            .expect("an adoption event");
-        let adop_link = adop.family_link.as_ref().expect("its family");
-        assert_eq!(adop_link.xref, "@F2@");
-        assert_eq!(adop_link.adopted_by, Some(AdoptedByWhichParent::Husband));
+        assert_eq!(
+            link.detail().pedigree.as_ref().map(|p| &p.value),
+            Some(&Pedigree::Adopted)
+        );
+        let adop = event_of(paul, &EventKind::Adoption);
+        let adop_family = adop.detail().family.as_ref().expect("its family");
+        assert_eq!(xref(&data, adop_family.family), Some("@F2@"));
+        assert_eq!(
+            adop_family.adopted_by.as_ref().map(|a| &a.value),
+            Some(&Adoption::Husband)
+        );
         // The adoptive father is a spouse of that family.
         assert!(data.individuals[3]
-            .families
+            .spouse_of
             .iter()
-            .any(|l| l.xref == "@F2@"));
+            .any(|l| xref(&data, l.family) == Some("@F2@")));
     }
 
     #[test]
     fn foster_parents_become_a_foster_family() {
-        use ged_io::types::individual::family_link::pedigree::Pedigree;
-
         let data = convert(concat!(
             "fam Doe John + Roe Jane\nbeg\n- h Paul 1930\nend\n",
             "rel Doe Paul\nbeg\n- fost: Poe Peter + Poe Mary\nend\n",
         ));
         let foster = &data.families[1];
-        assert!(foster.individual1.is_some() && foster.individual2.is_some());
+        assert!(foster.husband.is_some() && foster.wife.is_some());
         let paul = &data.individuals[2];
-        assert!(paul
-            .families
-            .iter()
-            .any(|l| l.xref == "@F2@" && l.pedigree_linkage_type == Some(Pedigree::Foster)));
+        assert!(paul.child_of.iter().any(|l| {
+            xref(&data, l.family) == Some("@F2@")
+                && l.detail().pedigree.as_ref().map(|p| &p.value) == Some(&Pedigree::Foster)
+        }));
         // Fostering is no adoption.
-        assert!(paul.events.iter().all(|e| e.event != E::Adoption));
+        assert!(paul.events_of(EventKind::Adoption).next().is_none());
     }
 
     #[test]
@@ -1455,65 +1434,84 @@ mod tests {
             "page-ext Gallery\n  content\nend page-ext\n",
             "wizard-note henri\n  1234\nend wizard-note\n",
         ));
-        let tags: Vec<_> = data.custom_data.iter().map(|t| t.tag.as_str()).collect();
+        let tags: Vec<_> = extensions(&data, &data.extra)
+            .into_iter()
+            .map(|(tag, _)| tag)
+            .collect();
         assert!(tags.contains(&TAG_PAGE));
         assert!(tags.contains(&TAG_WIZARD));
     }
 
-    /// Canary for the `ged_io` writer bug `text_tag` works around: once this fails,
-    /// `ged_io` writes a multi-line user-defined value it can read back, and `text_tag`
-    /// can go.
-    #[test]
-    fn ged_io_still_writes_a_multi_line_user_defined_value_it_cannot_read() {
-        use ged_io::{GedcomBuilder, GedcomWriter};
-        let data = GedcomData {
-            custom_data: vec![Box::new(custom(TAG_PAGE, "first\nsecond"))],
-            ..GedcomData::default()
-        };
-        let written = GedcomWriter::new().write_to_string(&data).expect("writes");
-        assert!(written.contains("0 _GWPAGE first\nsecond\n"), "{written}");
-        assert!(GedcomBuilder::new().build_from_str(&written).is_err());
-    }
-
+    /// A page over several lines: `ged_io` writes the line breaks of an extension's text
+    /// as `CONT` lines, and reads them back into the text.
     #[test]
     fn a_page_of_several_lines_reads_back_as_written() {
-        use ged_io::{GedcomBuilder, GedcomWriter};
+        use ged_io::GedcomWriter;
         let page = crate::database::Page {
             name: "Sample".to_owned(),
             text: "first\n\nthird".to_owned(),
         };
-        let data = GedcomData {
-            custom_data: vec![Box::new(page_tag(TAG_PAGE, &page))],
-            ..GedcomData::default()
-        };
+        let mut data = Dataset::new(GedcomVersion::V5_5_1);
+        let ids = Ids::new(data.store_mut(), 0, 0);
+        data.extra.push(page_tag(&ids, ids.page, &page));
         let written = GedcomWriter::new().write_to_string(&data).expect("writes");
         assert!(
             written.contains("0 _GWPAGE Sample\n1 NOTE first\n2 CONT\n2 CONT third\n"),
             "{written}"
         );
-        let read = GedcomBuilder::new()
-            .build_from_str(&written)
-            .expect("reads back");
-        assert_eq!(read.custom_data, data.custom_data);
-    }
-
-    #[test]
-    fn a_page_of_several_lines_is_continued_line_by_line() {
-        let tag = text_tag("NOTE", "first\n\nthird");
-        assert_eq!(tag.value.as_deref(), Some("first"));
-        let continued: Vec<_> = tag
-            .children
-            .iter()
-            .map(|t| (t.tag.as_str(), t.value.as_deref()))
-            .collect();
-        assert_eq!(continued, [("CONT", None), ("CONT", Some("third"))]);
+        let read = Dataset::parse(written);
+        assert_eq!(
+            read.extra[0].to_structure(&read),
+            data.extra[0].to_structure(&data)
+        );
     }
 
     #[test]
     fn the_header_records_the_producer() {
         let data = convert("fam A B + C D\n");
-        let source = data.header.unwrap().source.unwrap();
-        assert_eq!(source.value.as_deref(), Some("GENEWEB"));
-        assert!(source.name.unwrap().starts_with("geneweb "));
+        let source = data.header.as_ref().unwrap().source.as_ref().unwrap();
+        assert_eq!(text(&data, &source.product), "GENEWEB");
+        assert!(text(&data, source.name.as_ref().unwrap()).starts_with("geneweb "));
+    }
+
+    /// The conversion, a GEDCOM 5.5.1 dataset, is written as conformant GEDCOM 5.5.1 as
+    /// it is, but for what a `.gw` file cannot say and the writer completes or moves: the
+    /// format of a portrait, which the writer reads from the file's extension, and the
+    /// event witnesses, which it keeps as `_ASSO` since 5.5.1 has no `ASSO` under an
+    /// event.
+    #[test]
+    fn the_writer_repairs_only_what_a_gw_file_cannot_say() {
+        use ged_io::GedcomWriter;
+        let data = convert(concat!(
+            "fam Doe John #image p.jpg #nick Johnny [:Baron:Sampleton:1800::] #apriv k1900 ",
+            "+1850 #sep Roe Jane\n",
+            "wit m: Poe Paul\n",
+            "beg\n- h Paul 0(around_midsummer)\nend\n",
+            "pevt Doe John\n#hosp 1914\nwit m: Poe Paul\nend pevt\n",
+            "rel Doe Paul\nbeg\n- adop fath: Poe Peter\n- godp fath: Moe Mark\nend\n",
+            "page-ext Gallery\n  first\n  second\nend page-ext\n",
+        ));
+        let repairs = |version| {
+            let (_, report) = GedcomWriter::new()
+                .gedcom_version(version)
+                .write_to_string_with_report(&data)
+                .expect("writes");
+            report
+                .repairs
+                .iter()
+                .map(|r| r.detail.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            repairs(GedcomVersion::V5_5_1),
+            [
+                "INDI.EVEN.ASSO: not permitted here, written as _ASSO",
+                "INDI.OBJE.FILE lacks FORM: FORM jpg added",
+                "FAM.MARR.ASSO: not permitted here, written as _ASSO",
+            ]
+        );
+        // Written as GEDCOM 7, the 5.5.1 structures 7 does not have are repaired too,
+        // into extensions (`_RELA`, `_FILE`): nothing is lost.
+        assert_ne!(repairs(GedcomVersion::V7_0).len(), 0);
     }
 }

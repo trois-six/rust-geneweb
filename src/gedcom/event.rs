@@ -13,7 +13,7 @@
 //! Nothing is dropped: an event with no GEDCOM counterpart keeps its name in the label,
 //! and callers additionally record the original `.gw` tag as a user-defined tag.
 
-use ged_io::types::event::Event;
+use ged_io::model::EventKind;
 
 use crate::model::event::{FamilyEventName, PersonEventName, WitnessKind};
 
@@ -21,13 +21,13 @@ use crate::model::event::{FamilyEventName, PersonEventName, WitnessKind};
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventMapping {
     /// The GEDCOM event to record.
-    pub event: Event,
+    pub event: EventKind,
     /// The `TYPE` label, set only for generic events.
     pub event_type: Option<String>,
 }
 
 impl EventMapping {
-    fn standard(event: Event) -> Self {
+    fn standard(event: EventKind) -> Self {
         Self {
             event,
             event_type: None,
@@ -36,7 +36,7 @@ impl EventMapping {
 
     fn generic(label: &str) -> Self {
         Self {
-            event: Event::Event,
+            event: EventKind::Event,
             event_type: Some(label.to_owned()),
         }
     }
@@ -49,28 +49,28 @@ impl EventMapping {
 pub fn person_event(name: &PersonEventName) -> EventMapping {
     use PersonEventName as P;
     match name {
-        P::Birth => EventMapping::standard(Event::Birth),
-        P::Death => EventMapping::standard(Event::Death),
-        P::Burial => EventMapping::standard(Event::Burial),
-        P::Cremation => EventMapping::standard(Event::Cremation),
+        P::Birth => EventMapping::standard(EventKind::Birth),
+        P::Death => EventMapping::standard(EventKind::Death),
+        P::Burial => EventMapping::standard(EventKind::Burial),
+        P::Cremation => EventMapping::standard(EventKind::Cremation),
         // GEDCOM has one `BAPM`; GeneWeb distinguishes the LDS ordinance, which the
         // `.gw` tag recorded alongside the event preserves.
-        P::Baptism => EventMapping::standard(Event::Baptism),
-        P::BarMitzvah => EventMapping::standard(Event::BarMitzvah),
-        P::BatMitzvah => EventMapping::standard(Event::BasMitzvah),
-        P::Benediction => EventMapping::standard(Event::Blessing),
-        P::Confirmation => EventMapping::standard(Event::Confirmation),
+        P::Baptism => EventMapping::standard(EventKind::Baptism),
+        P::BarMitzvah => EventMapping::standard(EventKind::BarMitzvah),
+        P::BatMitzvah => EventMapping::standard(EventKind::BasMitzvah),
+        P::Benediction => EventMapping::standard(EventKind::Blessing),
+        P::Confirmation => EventMapping::standard(EventKind::Confirmation),
 
-        P::Emigration => EventMapping::standard(Event::Emigration),
-        P::FirstCommunion => EventMapping::standard(Event::FirstCommunion),
-        P::Graduate => EventMapping::standard(Event::Graduation),
-        P::Immigration => EventMapping::standard(Event::Immigration),
-        P::Naturalisation => EventMapping::standard(Event::Naturalization),
-        P::Ordination => EventMapping::standard(Event::Ordination),
-        P::Census => EventMapping::standard(Event::Census),
-        P::Residence => EventMapping::standard(Event::Residence),
-        P::Retired => EventMapping::standard(Event::Retired),
-        P::Will => EventMapping::standard(Event::Will),
+        P::Emigration => EventMapping::standard(EventKind::Emigration),
+        P::FirstCommunion => EventMapping::standard(EventKind::FirstCommunion),
+        P::Graduate => EventMapping::standard(EventKind::Graduation),
+        P::Immigration => EventMapping::standard(EventKind::Immigration),
+        P::Naturalisation => EventMapping::standard(EventKind::Naturalization),
+        P::Ordination => EventMapping::standard(EventKind::Ordination),
+        P::Census => EventMapping::standard(EventKind::Census),
+        P::Residence => EventMapping::standard(EventKind::Residence),
+        P::Retired => EventMapping::standard(EventKind::Retirement),
+        P::Will => EventMapping::standard(EventKind::Will),
 
         // Standard GEDCOM tags that are not events. `gwb2ged` writes them as `1 EDUC`,
         // `1 BAPL`, …, but no GEDCOM structure of that tag can hold a `.gw` event:
@@ -122,15 +122,17 @@ pub fn person_event(name: &PersonEventName) -> EventMapping {
 pub fn family_event(name: &FamilyEventName) -> EventMapping {
     use FamilyEventName as F;
     match name {
-        F::Marriage => EventMapping::standard(Event::Marriage),
-        F::Engagement => EventMapping::standard(Event::Engagement),
-        F::Divorce => EventMapping::standard(Event::Divorce),
-        F::Separated => EventMapping::standard(Event::Separated),
-        F::Annulment => EventMapping::standard(Event::Annulment),
-        F::MarriageBann => EventMapping::standard(Event::MarriageBann),
-        F::MarriageContract => EventMapping::standard(Event::MarriageContract),
-        F::MarriageLicense => EventMapping::standard(Event::MarriageLicense),
-        F::Residence => EventMapping::standard(Event::Residence),
+        F::Marriage => EventMapping::standard(EventKind::Marriage),
+        F::Engagement => EventMapping::standard(EventKind::Engagement),
+        F::Divorce => EventMapping::standard(EventKind::Divorce),
+        // GEDCOM has no separation event (`gwb2ged` writes `SEP`, a tag of no GEDCOM
+        // version): it is a generic event, labelled as GEDCOM readers label one.
+        F::Separated => EventMapping::generic("Separation"),
+        F::Annulment => EventMapping::standard(EventKind::Annulment),
+        F::MarriageBann => EventMapping::standard(EventKind::MarriageBann),
+        F::MarriageContract => EventMapping::standard(EventKind::MarriageContract),
+        F::MarriageLicense => EventMapping::standard(EventKind::MarriageLicense),
+        F::Residence => EventMapping::standard(EventKind::Residence),
 
         // No GEDCOM equivalent; GeneWeb's own labels.
         F::NoMarriage => EventMapping::generic("unmarried"),
@@ -169,11 +171,11 @@ mod tests {
         // attribute, whose required payload a `.gw` event lacks, so it takes the same
         // shape as `OCCU` and `PROP` above.
         let education = person_event(&PersonEventName::Education);
-        assert_eq!(education.event, Event::Event);
+        assert_eq!(education.event, EventKind::Event);
         assert_eq!(education.event_type.as_deref(), Some("EDUC"));
 
         let graduation = person_event(&PersonEventName::Graduate);
-        assert_eq!(graduation.event, Event::Graduation);
+        assert_eq!(graduation.event, EventKind::Graduation);
         assert_eq!(graduation.event_type, None);
     }
 
@@ -187,18 +189,18 @@ mod tests {
             (PersonEventName::ConfirmationLds, "CONL"),
         ] {
             let m = person_event(&name);
-            assert_eq!(m.event, Event::Event, "{tag}");
+            assert_eq!(m.event, EventKind::Event, "{tag}");
             assert_eq!(m.event_type.as_deref(), Some(tag));
         }
 
         // The civil ones keep their own standard tags.
         assert_eq!(
             person_event(&PersonEventName::Baptism).event,
-            Event::Baptism
+            EventKind::Baptism
         );
         assert_eq!(
             person_event(&PersonEventName::Confirmation).event,
-            Event::Confirmation
+            EventKind::Confirmation
         );
     }
 
@@ -209,7 +211,7 @@ mod tests {
         for tag in PersonEventName::TAGS {
             let name = PersonEventName::from_tag(tag).expect("a known tag");
             let mapping = person_event(&name);
-            if mapping.event == Event::Event {
+            if mapping.event == EventKind::Event {
                 let label = mapping.event_type.expect("a generic event carries a label");
                 assert!(!label.is_empty(), "{tag} has an empty label");
             }
@@ -217,7 +219,7 @@ mod tests {
         for tag in FamilyEventName::TAGS {
             let name = FamilyEventName::from_tag(tag).expect("a known tag");
             let mapping = family_event(&name);
-            if mapping.event == Event::Event {
+            if mapping.event == EventKind::Event {
                 assert!(mapping.event_type.is_some_and(|l| !l.is_empty()));
             }
         }
@@ -225,15 +227,21 @@ mod tests {
 
     #[test]
     fn the_common_events_use_standard_tags() {
-        assert_eq!(person_event(&PersonEventName::Birth).event, Event::Birth);
-        assert_eq!(person_event(&PersonEventName::Death).event, Event::Death);
+        assert_eq!(
+            person_event(&PersonEventName::Birth).event,
+            EventKind::Birth
+        );
+        assert_eq!(
+            person_event(&PersonEventName::Death).event,
+            EventKind::Death
+        );
         assert_eq!(
             family_event(&FamilyEventName::Marriage).event,
-            Event::Marriage
+            EventKind::Marriage
         );
         assert_eq!(
             family_event(&FamilyEventName::Divorce).event,
-            Event::Divorce
+            EventKind::Divorce
         );
     }
 
@@ -241,7 +249,7 @@ mod tests {
     fn an_unknown_tag_keeps_its_name_as_the_label() {
         let name = PersonEventName::from_tag("#future").unwrap();
         let mapping = person_event(&name);
-        assert_eq!(mapping.event, Event::Event);
+        assert_eq!(mapping.event, EventKind::Event);
         assert_eq!(mapping.event_type.as_deref(), Some("future"));
     }
 
