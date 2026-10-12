@@ -1510,8 +1510,12 @@ mod tests {
                 "FAM.MARR.ASSO: not permitted here, written as _ASSO",
             ]
         );
-        // Written as GEDCOM 7, the 5.5.1 structures 7 does not have are repaired too,
-        // into extensions (`_RELA`, `_FILE`): nothing is lost.
-        assert_ne!(repairs(GedcomVersion::V7_0).len(), 0);
+        // Written as GEDCOM 7, the writer converts the 5.5.1 structures 7 does not have
+        // (`RELA` becomes a `ROLE` and its phrase, the portrait an `OBJE` record): only
+        // the portrait's format is left to complete.
+        assert_eq!(
+            repairs(GedcomVersion::V7_0),
+            ["OBJE.FILE lacks FORM: FORM image/jpeg added"]
+        );
     }
 }
