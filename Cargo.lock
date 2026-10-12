@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "ged_io"
 version = "0.17.0"
-source = "git+https://github.com/trois-six/ged_io?branch=redesign#3df1cf6075636876f472a29e510c899178d56ea9"
+source = "git+https://github.com/trois-six/ged_io?branch=redesign#bcb70adf4d5d8e16193dc266e479c76814c2d1f3"
 
 [[package]]
 name = "geneweb"
