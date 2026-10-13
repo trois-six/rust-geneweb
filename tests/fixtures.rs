@@ -124,8 +124,6 @@ fn person_and_family_counts_match_gwc() {
 
 #[test]
 fn gallery_page_keeps_its_media_reference() {
-    use ged_io::model::Value;
-
     let db = geneweb::database::GwDatabase::read(GALICHET, "galichet.gw").expect("parses");
     let gallery = db
         .pages
@@ -137,25 +135,19 @@ fn gallery_page_keeps_its_media_reference() {
         .contains("\"img\": \"jean_pierre.0.galichet.jpg\""));
 
     let data = db.to_gedcom();
-    let store = data.store();
     let page = data
-        .extra
-        .iter()
-        .find(|node| {
-            store.tag(node.tag) == "_GWPAGE"
-                && matches!(&node.payload, Value::Text(t) if t.eq_str(store, "Gallery"))
-        })
+        .extra()
+        .into_iter()
+        .find(|node| node.tag() == "_GWPAGE" && node.text().is_some_and(|t| t == "Gallery"))
         .expect("the Gallery GEDCOM extension");
     // The page's text, whole, in the note.
     let note = page
-        .children
-        .iter()
-        .find(|child| store.tag(child.tag) == "NOTE")
+        .children()
+        .into_iter()
+        .find(|child| child.tag() == "NOTE")
         .expect("the page's note");
-    let Value::Text(text) = &note.payload else {
-        panic!("the note has the page's text")
-    };
-    assert!(text.to_str(store).contains("jean_pierre.0.galichet.jpg"));
+    let text = note.text().expect("the note has the page's text");
+    assert!(text.to_str().contains("jean_pierre.0.galichet.jpg"));
 }
 
 /// Reading a `.gw` and writing GEDCOM, then reading that GEDCOM back with `ged_io`.
@@ -168,8 +160,8 @@ fn a_gw_file_exports_to_gedcom_and_reads_back() {
 
     let db = geneweb::database::GwDatabase::read(GALICHET, "galichet.gw").expect("parses");
     let data = db.to_gedcom();
-    assert_eq!(data.individuals.len(), 35);
-    assert_eq!(data.families.len(), 15);
+    assert_eq!(data.individuals().len(), 35);
+    assert_eq!(data.families().len(), 15);
 
     let text = GedcomWriter::new()
         .write_to_string(&data)
@@ -184,12 +176,12 @@ fn a_gw_file_exports_to_gedcom_and_reads_back() {
         .build_from_str(&text)
         .expect("ged_io reads what we wrote");
     assert_eq!(
-        reparsed.individuals.len(),
+        reparsed.individuals().len(),
         35,
         "individuals survive the round trip"
     );
     assert_eq!(
-        reparsed.families.len(),
+        reparsed.families().len(),
         15,
         "families survive the round trip"
     );
@@ -206,7 +198,7 @@ fn a_structured_event_supersedes_the_line_it_repeats() {
     let db = geneweb::database::GwDatabase::read(GALICHET, "galichet.gw").expect("parses");
     let data = db.to_gedcom();
 
-    for individual in &data.individuals {
+    for individual in data.individuals() {
         for kind in [
             EventKind::Birth,
             EventKind::Death,
@@ -217,14 +209,19 @@ fn a_structured_event_supersedes_the_line_it_repeats() {
             assert!(
                 count <= 1,
                 "{:?} has {count} {kind:?} events",
-                individual.xref
+                individual.xref().map(|x| data.store().xref(x))
             );
         }
     }
-    for family in &data.families {
+    for family in data.families() {
         for kind in [EventKind::Marriage, EventKind::Divorce] {
-            let count = family.events.iter().filter(|e| e.kind == kind).count();
-            assert!(count <= 1, "{:?} has {count} {kind:?} events", family.xref);
+            let count = family
+                .events()
+                .into_iter()
+                .filter(|e| e.kind() == kind)
+                .count();
+            let xref = family.xref().map(|x| data.store().xref(x));
+            assert!(count <= 1, "{xref:?} has {count} {kind:?} events");
         }
     }
 }
@@ -257,6 +254,6 @@ fn the_second_geneweb_sample_parses() {
     assert_ne!(accomplishment.note.len(), 0);
 
     let data = db.to_gedcom();
-    assert_eq!(data.individuals.len(), 3);
-    assert_eq!(data.families.len(), 1);
+    assert_eq!(data.individuals().len(), 3);
+    assert_eq!(data.families().len(), 1);
 }

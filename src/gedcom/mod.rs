@@ -32,7 +32,7 @@ use ged_io::model::ChildLink;
 use ged_io::model::{
     Adoption, Association, Citation, CitationSource, Dataset, EnumList, Event, EventFamily,
     EventKind, Family, File, Header, HeaderSource, Individual, IndividualRef, MultimediaLink, Name,
-    NamePiece, NamePieceKind, NameType, Node, Note, Pedigree, Phrased, Place, Restriction,
+    NamePiece, NamePieceKind, NameType, Node, Note, Pedigree, Phrased, Place, Record, Restriction,
     Sex as GedSex, SpouseLink, Store, TagId, Text, ThinVec, Value, XrefId,
 };
 use ged_io::GedcomVersion;
@@ -362,7 +362,7 @@ impl GwDatabase {
             self.persons.len(),
             self.families.len() + implied.len(),
         );
-        data.header = Some(header());
+        data.set_header(Some(header()));
 
         // Which families each person belongs to, and how.
         let mut spouse_of: Vec<Vec<SpouseLink>> = vec![Vec::new(); self.persons.len()];
@@ -389,40 +389,44 @@ impl GwDatabase {
             child_of[family.child].push(link);
         }
 
-        data.individuals.reserve(self.persons.len());
+        // An adoption is also an event of the adopted child, which points to the family
+        // of its adoptive parents.
+        let mut adoptions: Vec<Vec<Event>> = vec![Vec::new(); self.persons.len()];
+        for (i, family) in implied.iter().enumerate() {
+            if family.pedigree == Pedigree::Adopted {
+                let xref = ids.family(self.families.len() + i);
+                adoptions[family.child].push(adoption_event(xref, family));
+            }
+        }
+
         for (id, person) in self.persons.iter().enumerate() {
             let mut individual = self.individual(&ids, id, person);
             individual.spouse_of = std::mem::take(&mut spouse_of[id]).into();
             individual.child_of = std::mem::take(&mut child_of[id]).into();
-            data.individuals.push(individual);
+            individual.events.append(&mut adoptions[id]);
+            data.push(Record::Individual(Box::new(individual)));
         }
-        data.families.reserve(self.families.len() + implied.len());
         for (id, family) in self.families.iter().enumerate() {
-            data.families.push(self.family(&ids, id, family));
+            data.push(Record::Family(Box::new(self.family(&ids, id, family))));
         }
         for (i, family) in implied.iter().enumerate() {
             let xref = ids.family(self.families.len() + i);
-            if family.pedigree == Pedigree::Adopted {
-                data.individuals[family.child]
-                    .events
-                    .push(adoption_event(xref, family));
-            }
             let partner = |who: Option<PersonId>| who.map(|p| IndividualRef::new(ids.person(p)));
-            data.families.push(Family {
+            data.push(Record::Family(Box::new(Family {
                 xref: Some(xref),
                 husband: partner(family.father),
                 wife: partner(family.mother),
                 children: vec![IndividualRef::new(ids.person(family.child))],
                 citations: citations(family.sources),
                 ..Family::default()
-            });
+            })));
         }
 
         for page in &self.pages {
-            data.extra.push(page_tag(&ids, ids.page, page));
+            data.push(Record::Other(Box::new(page_tag(&ids, ids.page, page))));
         }
         for wizard in &self.wizard_notes {
-            data.extra.push(page_tag(&ids, ids.wizard, wizard));
+            data.push(Record::Other(Box::new(page_tag(&ids, ids.wizard, wizard))));
         }
 
         data
@@ -943,7 +947,7 @@ const _: Option<(&PersonEvent, &FamilyEvent, WitnessKind)> = None;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ged_io::model::NoteContent;
+    use ged_io::model::{Items, View};
 
     fn convert(input: &str) -> Dataset {
         GwDatabase::read(input.as_bytes(), "t.gw")
@@ -951,53 +955,48 @@ mod tests {
             .to_gedcom()
     }
 
-    /// The characters of a text of `data`.
-    fn text(data: &Dataset, text: &Text) -> String {
-        text.to_str(data).into_owned()
-    }
-
     /// The identifier of a record or the target of a pointer.
     fn xref(data: &Dataset, id: Option<XrefId>) -> Option<&str> {
         id.map(|id| data.store().xref(id))
     }
 
+    /// Individual `i` of `data`, in file order.
+    fn individual(data: &Dataset, i: usize) -> View<'_, Individual> {
+        data.individuals().get(i).expect("an individual")
+    }
+
+    /// Family `i` of `data`, in file order.
+    fn family(data: &Dataset, i: usize) -> View<'_, Family> {
+        data.families().get(i).expect("a family")
+    }
+
     /// The tag and text of each extension structure.
-    fn extensions<'d>(data: &'d Dataset, nodes: &'d [Node]) -> Vec<(&'d str, Option<String>)> {
+    fn extensions(nodes: Items<'_, Node>) -> Vec<(&str, Option<String>)> {
         nodes
-            .iter()
-            .map(|n| {
-                let value = match &n.payload {
-                    Value::Text(t) => Some(text(data, t)),
-                    _ => None,
-                };
-                (data.store().tag(n.tag), value)
-            })
+            .into_iter()
+            .map(|n| (n.tag(), n.text().map(|t| t.to_string())))
             .collect()
     }
 
-    fn note_texts(data: &Dataset, notes: &[Note]) -> Vec<String> {
+    fn note_texts(notes: Items<'_, Note>) -> Vec<String> {
         notes
-            .iter()
-            .filter_map(|n| match &n.content {
-                NoteContent::Text(t) => Some(text(data, t)),
-                NoteContent::Shared(_) => None,
-            })
+            .into_iter()
+            .filter_map(|n| n.text().map(|t| t.to_string()))
             .collect()
     }
 
-    fn event_of<'i>(individual: &'i Individual, kind: &EventKind) -> &'i Event {
+    fn event_of<'d>(individual: View<'d, Individual>, kind: &EventKind) -> View<'d, Event> {
         individual
             .events_of(kind.clone())
             .next()
             .unwrap_or_else(|| panic!("a {kind:?}"))
     }
 
-    fn associated<'d>(data: &'d Dataset, event: &Event) -> Vec<&'d str> {
+    fn associated<'d>(data: &'d Dataset, event: View<'_, Event>) -> Vec<&'d str> {
         event
-            .detail()
-            .associations
-            .iter()
-            .filter_map(|a| xref(data, a.individual))
+            .associations()
+            .into_iter()
+            .filter_map(|a| xref(data, a.individual()))
             .collect()
     }
 
@@ -1012,31 +1011,31 @@ mod tests {
             "end pevt\n",
             "fam Poe Paul + Moe Mary\n",
         ));
-        let john = &data.individuals[0];
+        let john = individual(&data, 0);
         let death = event_of(john, &EventKind::Death);
         assert_eq!(associated(&data, death), ["@I3@"]);
         // The witness is stated once, on the event, and nowhere else.
-        assert_eq!(john.detail().associations.len(), 0);
+        assert_eq!(john.associations().len(), 0);
         assert!(john
-            .events
-            .iter()
-            .all(|e| e.kind == EventKind::Death || e.detail().associations.is_empty()));
+            .events()
+            .into_iter()
+            .all(|e| e.kind() == EventKind::Death || e.associations().is_empty()));
     }
 
     #[test]
     fn a_family_becomes_two_individuals_and_a_family_record() {
         let data = convert("fam Dupont Jean + Martin Marie\nbeg\n- m Paul 1930\nend\n");
-        assert_eq!(data.individuals.len(), 3);
-        assert_eq!(data.families.len(), 1);
+        assert_eq!(data.individuals().len(), 3);
+        assert_eq!(data.families().len(), 1);
 
-        let family = &data.families[0];
-        assert_eq!(xref(&data, family.xref), Some("@F1@"));
+        let family = family(&data, 0);
+        assert_eq!(xref(&data, family.xref()), Some("@F1@"));
         assert_eq!(xref(&data, family.husband_id()), Some("@I1@"));
         assert_eq!(xref(&data, family.wife_id()), Some("@I2@"));
         let children: Vec<_> = family
-            .children
-            .iter()
-            .filter_map(|c| xref(&data, c.individual))
+            .children()
+            .into_iter()
+            .filter_map(|c| xref(&data, c.individual()))
             .collect();
         assert_eq!(children, ["@I3@"]);
     }
@@ -1044,25 +1043,22 @@ mod tests {
     #[test]
     fn names_use_gedcom_slash_syntax() {
         let data = convert("fam Dupont Jean + Martin Marie\n");
-        let name = &data.individuals[0].names[0];
-        assert_eq!(text(&data, &name.value), "Jean /Dupont/");
+        let name = individual(&data, 0).name().expect("a name");
+        assert_eq!(name.value(), "Jean /Dupont/");
         assert_eq!(
-            name.surname().map(|s| text(&data, s)).as_deref(),
+            name.surname().map(|s| s.to_string()).as_deref(),
             Some("Dupont")
         );
-        assert_eq!(
-            name.given().map(|g| text(&data, g)).as_deref(),
-            Some("Jean")
-        );
+        assert_eq!(name.given().map(|g| g.to_string()).as_deref(), Some("Jean"));
     }
 
     #[test]
     fn aliases_become_additional_name_records() {
         let data = convert("fam Dupont Jean {Jeannot} #salias Dupond (Le_Grand) 1900 + A B\n");
-        let values: Vec<_> = data.individuals[0]
-            .names
-            .iter()
-            .map(|n| text(&data, &n.value))
+        let values: Vec<_> = individual(&data, 0)
+            .names()
+            .into_iter()
+            .map(|n| n.value().to_string())
             .collect();
         assert!(values.iter().any(|v| v == "Jean /Dupont/"));
         assert!(values.iter().any(|v| v == "Le Grand /Dupont/"));
@@ -1070,34 +1066,36 @@ mod tests {
         assert!(values.iter().any(|v| v == "Jean /Dupond/"));
     }
 
-    fn nicknames(data: &Dataset, name: &Name) -> Vec<String> {
+    fn nicknames(name: View<'_, Name>) -> Vec<String> {
         name.pieces_of(NamePieceKind::Nickname)
-            .map(|n| text(data, n))
+            .map(|n| n.to_string())
             .collect()
     }
 
     #[test]
     fn every_nickname_is_kept() {
         let data = convert("fam Doe John #nick Johnny #nick Jacko + Roe Jane\n");
-        let names = &data.individuals[0].names;
-        assert_eq!(nicknames(&data, &names[0]), ["Johnny"]);
+        let names = individual(&data, 0).names();
+        assert_eq!(nicknames(names.first().expect("a name")), ["Johnny"]);
         let second = names
-            .iter()
-            .find(|n| nicknames(&data, n) == ["Jacko"])
+            .into_iter()
+            .find(|&n| nicknames(n) == ["Jacko"])
             .expect("the second nickname");
-        assert_eq!(text(&data, &second.value), "John /Doe/");
+        assert_eq!(second.value(), "John /Doe/");
         assert_eq!(
-            second.detail().kind.as_ref().map(|k| &k.value),
-            Some(&NameType::Aka)
+            second.kind().map(View::<Phrased<NameType>>::value),
+            Some(NameType::Aka)
         );
     }
 
     #[test]
     fn a_nickname_is_a_piece_between_the_given_name_and_the_surname() {
         let data = convert("fam Doe John #nick Johnny + Roe Jane\n");
-        let kinds: Vec<_> = data.individuals[0].names[0]
-            .pieces
-            .iter()
+        let kinds: Vec<_> = individual(&data, 0)
+            .name()
+            .expect("a name")
+            .pieces()
+            .into_iter()
             .map(|p| p.kind)
             .collect();
         assert_eq!(
@@ -1113,12 +1111,14 @@ mod tests {
     #[test]
     fn parents_get_a_spouse_link_and_children_a_child_link() {
         let data = convert("fam Dupont Jean + Martin Marie\nbeg\n- m Paul\nend\n");
-        let father = &data.individuals[0];
-        assert_eq!(xref(&data, father.spouse_of[0].family), Some("@F1@"));
-        assert!(father.child_of.is_empty());
-        let child = &data.individuals[2];
-        assert_eq!(xref(&data, child.child_of[0].family), Some("@F1@"));
-        assert!(child.spouse_of.is_empty());
+        let father = individual(&data, 0);
+        let spouse_of = father.spouse_of().first().expect("a spouse link");
+        assert_eq!(xref(&data, spouse_of.family()), Some("@F1@"));
+        assert!(father.child_of().is_empty());
+        let child = individual(&data, 2);
+        let link = child.child_of().first().expect("a child link");
+        assert_eq!(xref(&data, link.family()), Some("@F1@"));
+        assert!(child.spouse_of().is_empty());
     }
 
     #[test]
@@ -1127,7 +1127,7 @@ mod tests {
             "fam Doe John #apriv + Roe Jane #semipub\n",
             "fam Poe Paul #apubl + Moe Mary\n",
         ));
-        let restriction = |i: usize| data.individuals[i].detail().restriction.clone();
+        let restriction = |i: usize| individual(&data, i).restriction();
         let confidential = Some(EnumList(vec![Restriction::Confidential]));
         assert_eq!(restriction(0), confidential);
         assert_eq!(restriction(1), confidential);
@@ -1138,38 +1138,35 @@ mod tests {
     #[test]
     fn sex_is_written_only_when_recorded() {
         let data = convert("fam Dupont Jean + Martin Marie\nbeg\n- Paul\nend\n");
-        assert_eq!(data.individuals[0].sex, Some(GedSex::Male));
-        assert_eq!(data.individuals[1].sex, Some(GedSex::Female));
-        assert_eq!(data.individuals[2].sex, None);
+        assert_eq!(individual(&data, 0).sex(), Some(GedSex::Male));
+        assert_eq!(individual(&data, 1).sex(), Some(GedSex::Female));
+        assert_eq!(individual(&data, 2).sex(), None);
     }
 
     #[test]
     fn life_events_carry_dates_places_and_sources() {
         let data =
             convert("fam Dupont Jean 7/9/1830 #bp Reims #bs acte 12/5/1900 #dp Lyon + A B\n");
-        let individual = &data.individuals[0];
+        let individual = individual(&data, 0);
         let birth = event_of(individual, &EventKind::Birth);
-        assert_eq!(
-            text(&data, &birth.date.as_ref().unwrap().value),
-            "07 SEP 1830"
-        );
-        assert_eq!(text(&data, &birth.place.as_ref().unwrap().name), "Reims");
-        assert_eq!(birth.citations.len(), 1);
+        assert_eq!(birth.date().unwrap().value(), "07 SEP 1830");
+        assert_eq!(birth.place().unwrap().name(), "Reims");
+        assert_eq!(birth.citations().len(), 1);
         let death = event_of(individual, &EventKind::Death);
-        assert_eq!(text(&data, &death.place.as_ref().unwrap().name), "Lyon");
+        assert_eq!(death.place().unwrap().name(), "Lyon");
     }
 
     #[test]
     fn a_living_person_gets_no_death_event() {
         let data = convert("fam Dupont Jean 1990 + A B\n");
-        assert!(data.individuals[0].death().is_none());
+        assert!(individual(&data, 0).death().is_none());
     }
 
     #[test]
     fn occupations_and_titles_become_attributes() {
         let data = convert("fam Dupont Jean [*:duc:Bretagne:::] #occu Marchand 1900 + A B\n");
-        let individual = &data.individuals[0];
-        let value = |kind| text(&data, &event_of(individual, &kind).value);
+        let individual = individual(&data, 0);
+        let value = |kind| event_of(individual, &kind).value().to_string();
         assert_eq!(value(EventKind::Occupation), "Marchand");
         assert_eq!(value(EventKind::Title), "duc, Bretagne");
     }
@@ -1180,36 +1177,33 @@ mod tests {
             "fam Doe John [Samplename:Count:Sampleshire:1800:1810:2] ",
             "[:Baron:Sampleton:::] + A B\n",
         ));
-        let titles: Vec<_> = data.individuals[0].events_of(EventKind::Title).collect();
+        let titles: Vec<_> = individual(&data, 0).events_of(EventKind::Title).collect();
         assert_eq!(titles.len(), 2);
 
         let count = titles[0];
-        assert_eq!(text(&data, &count.value), "Count, Sampleshire, 2");
+        assert_eq!(count.value(), "Count, Sampleshire, 2");
         // The domain is part of the title, not a place.
-        assert!(count.place.is_none());
+        assert!(count.place().is_none());
         // Both ends of the period are kept.
-        assert_eq!(
-            text(&data, &count.date.as_ref().unwrap().value),
-            "FROM 1800 TO 1810"
-        );
-        assert_eq!(note_texts(&data, &count.detail().notes), ["Samplename"]);
+        assert_eq!(count.date().unwrap().value(), "FROM 1800 TO 1810");
+        assert_eq!(note_texts(count.notes()), ["Samplename"]);
 
         let baron = titles[1];
-        assert_eq!(text(&data, &baron.value), "Baron, Sampleton");
-        assert!(baron.date.is_none() && baron.detail.is_none() && baron.place.is_none());
+        assert_eq!(baron.value(), "Baron, Sampleton");
+        let owned = baron.into_owned();
+        assert!(owned.date.is_none() && owned.detail.is_none() && owned.place.is_none());
     }
 
     #[test]
     fn geneweb_only_concepts_ride_on_custom_tags() {
         let data = convert("fam Dupont Jean.2 #image p.jpg #apriv 1900 + A B\n");
-        let individual = &data.individuals[0];
+        let individual = individual(&data, 0);
         let portrait = individual
-            .detail()
-            .multimedia
+            .multimedia()
             .first()
             .expect("the portrait becomes GEDCOM multimedia");
-        assert_eq!(text(&data, &portrait.files[0].path), "p.jpg");
-        let tags = extensions(&data, &individual.extra);
+        assert_eq!(portrait.files().first().unwrap().path(), "p.jpg");
+        let tags = extensions(individual.extra());
         assert!(tags.contains(&(TAG_OCCURRENCE, Some("2".to_owned()))));
         assert!(tags.contains(&(TAG_ACCESS, Some("private".to_owned()))));
         assert!(tags.contains(&(TAG_IMAGE, Some("p.jpg".to_owned()))));
@@ -1217,13 +1211,13 @@ mod tests {
 
     /// The death reason and the note of a death event, as converted.
     fn death_reason_and_note(data: &Dataset) -> (Vec<String>, Vec<String>) {
-        let death = data.individuals[0].death().expect("a death");
-        let reasons = extensions(data, &death.extra)
+        let death = individual(data, 0).death().expect("a death");
+        let reasons = extensions(death.extra())
             .into_iter()
             .filter(|(tag, _)| *tag == TAG_DEATH_REASON)
             .filter_map(|(_, value)| value)
             .collect();
-        (reasons, note_texts(data, &death.detail().notes))
+        (reasons, note_texts(death.notes()))
     }
 
     #[test]
@@ -1249,7 +1243,7 @@ mod tests {
     #[test]
     fn the_death_reason_survives_a_pevt_death() {
         let data = convert("fam Doe John k1900 + Roe Jane\npevt Doe John\n#deat 1900\nend pevt\n");
-        assert_eq!(data.individuals[0].events_of(EventKind::Death).count(), 1);
+        assert_eq!(individual(&data, 0).events_of(EventKind::Death).count(), 1);
         assert_eq!(
             death_reason_and_note(&data),
             (vec!["killed".to_owned()], Vec::new())
@@ -1259,33 +1253,31 @@ mod tests {
     #[test]
     fn a_pacs_keeps_its_kind_because_gedcom_has_no_event_for_it() {
         let data = convert("fam A B + #pacs mf C D\n");
-        let family = &data.families[0];
-        assert!(extensions(&data, &family.extra)
+        assert!(extensions(family(&data, 0).extra())
             .contains(&(TAG_RELATION_KIND, Some("pacs".to_owned()))));
     }
 
     #[test]
     fn family_events_and_divorce() {
         let data = convert("fam A B +1850 -1860 C D\n");
-        let events = &data.families[0].events;
-        assert!(events.iter().any(|e| e.kind == EventKind::Marriage));
+        let events = family(&data, 0).events();
+        assert!(events.into_iter().any(|e| e.kind() == EventKind::Marriage));
         let divorce = events
-            .iter()
-            .find(|e| e.kind == EventKind::Divorce)
+            .into_iter()
+            .find(|e| e.kind() == EventKind::Divorce)
             .expect("a divorce");
-        assert_eq!(text(&data, &divorce.date.as_ref().unwrap().value), "1860");
+        assert_eq!(divorce.date().unwrap().value(), "1860");
     }
 
     #[test]
     fn a_separation_is_a_generic_event() {
         let data = convert("fam A B +1850 #sep C D\n");
-        let separation = data.families[0]
-            .events
-            .iter()
-            .find(|e| e.kind == EventKind::Event)
+        let separation = family(&data, 0)
+            .events()
+            .into_iter()
+            .find(|e| e.kind() == EventKind::Event)
             .expect("a separation");
-        let label = separation.detail().classification.as_ref().unwrap();
-        assert_eq!(text(&data, label), "Separation");
+        assert_eq!(separation.classification().unwrap(), "Separation");
     }
 
     #[test]
@@ -1295,31 +1287,31 @@ mod tests {
             "fevt\n#marr 1925\nwit m: Poe Paul\nend fevt\n",
             "pevt Doe John\n#deat 1970\nwit m: Moe Mark 1850\nend pevt\n",
         ));
-        let marriage = &data.families[0].events[0];
+        let marriage = family(&data, 0).events().first().expect("a marriage");
         assert_eq!(associated(&data, marriage), ["@I3@"]);
-        let death = event_of(&data.individuals[0], &EventKind::Death);
+        let death = event_of(individual(&data, 0), &EventKind::Death);
         assert_eq!(associated(&data, death), ["@I4@"]);
         // The witnesses are individuals of the file.
-        assert_eq!(data.individuals.len(), 4);
+        assert_eq!(data.individuals().len(), 4);
     }
 
     #[test]
     fn generic_events_keep_their_label() {
         let data = convert("fam A B + C D\npevt A B\n#hosp 1914\nend pevt\n");
-        let event = event_of(&data.individuals[0], &EventKind::Event);
-        let label = event.detail().classification.as_ref().unwrap();
-        assert_eq!(text(&data, label), "Hospitalization");
-        assert!(extensions(&data, &event.extra).contains(&(TAG_EVENT, Some("#hosp".to_owned()))));
+        let event = event_of(individual(&data, 0), &EventKind::Event);
+        assert_eq!(event.classification().unwrap(), "Hospitalization");
+        assert!(extensions(event.extra()).contains(&(TAG_EVENT, Some("#hosp".to_owned()))));
     }
 
     #[test]
     fn family_witnesses_survive_a_union_without_details() {
         // Nothing but witnesses on the `fam` line: no date, place, source or note.
         let data = convert("fam Doe John + Roe Jane\nwit m: Poe Paul\nfam Poe Paul + Moe Mary\n");
-        let union = &data.families[0].events;
+        let union = family(&data, 0).events();
         assert_eq!(union.len(), 1);
-        assert_eq!(union[0].kind, EventKind::Marriage);
-        assert_eq!(associated(&data, &union[0]), ["@I3@"]);
+        let event = union.first().expect("an event");
+        assert_eq!(event.kind(), EventKind::Marriage);
+        assert_eq!(associated(&data, event), ["@I3@"]);
     }
 
     #[test]
@@ -1330,9 +1322,12 @@ mod tests {
             "fevt\n#marr 1925\nwit f: Moe Mary\nend fevt\n",
             "fam Poe Paul + Moe Mary\n",
         ));
-        let events = &data.families[0].events;
+        let events = family(&data, 0).events();
         assert_eq!(events.len(), 1);
-        assert_eq!(associated(&data, &events[0]), ["@I4@", "@I3@"]);
+        assert_eq!(
+            associated(&data, events.first().expect("an event")),
+            ["@I4@", "@I3@"]
+        );
     }
 
     #[test]
@@ -1344,10 +1339,10 @@ mod tests {
             "wit m: #godp Martin Marie\n",
             "end pevt\n",
         ));
-        let birth = event_of(&data.individuals[0], &EventKind::Birth);
+        let birth = event_of(individual(&data, 0), &EventKind::Birth);
         assert_eq!(associated(&data, birth), ["@I2@"]);
-        let relation = birth.detail().associations[0].relation.as_ref().unwrap();
-        assert_eq!(text(&data, relation), "GODP");
+        let association = birth.associations().first().expect("an association");
+        assert_eq!(association.relation().unwrap(), "GODP");
     }
 
     #[test]
@@ -1359,11 +1354,10 @@ mod tests {
             "- godp: Durand Luc + Durand Anne\n",
             "end\n",
         ));
-        let labels: Vec<_> = data.individuals[0]
-            .detail()
-            .associations
-            .iter()
-            .map(|a| text(&data, a.relation.as_ref().unwrap()))
+        let labels: Vec<_> = individual(&data, 0)
+            .associations()
+            .into_iter()
+            .map(|a| a.relation().unwrap().to_string())
             .collect();
         // Godparents are labelled as gwb2ged labels them.
         assert_eq!(labels, ["recognising parent", "GODF", "GODM"]);
@@ -1377,38 +1371,41 @@ mod tests {
         ));
         // Not an association: nothing to mistake for a witness.
         assert!(data
-            .individuals
-            .iter()
-            .all(|i| i.detail().associations.is_empty()));
+            .individuals()
+            .into_iter()
+            .all(|i| i.associations().is_empty()));
 
-        let adoptive = &data.families[1];
-        assert_eq!(xref(&data, adoptive.xref), Some("@F2@"));
+        let adoptive = family(&data, 1);
+        assert_eq!(xref(&data, adoptive.xref()), Some("@F2@"));
         assert_eq!(xref(&data, adoptive.husband_id()), Some("@I4@"));
-        assert_eq!(adoptive.wife, None);
-        assert_eq!(xref(&data, adoptive.children[0].individual), Some("@I3@"));
+        assert!(adoptive.wife().is_none());
+        let child = adoptive.children().first().expect("a child");
+        assert_eq!(xref(&data, child.individual()), Some("@I3@"));
 
-        let paul = &data.individuals[2];
+        let paul = individual(&data, 2);
         let link = paul
-            .child_of
-            .iter()
-            .find(|l| xref(&data, l.family) == Some("@F2@"))
+            .child_of()
+            .into_iter()
+            .find(|l| xref(&data, l.family()) == Some("@F2@"))
             .expect("a link to the adoptive family");
         assert_eq!(
-            link.detail().pedigree.as_ref().map(|p| &p.value),
-            Some(&Pedigree::Adopted)
+            link.pedigree().map(View::<Phrased<Pedigree>>::value),
+            Some(Pedigree::Adopted)
         );
         let adop = event_of(paul, &EventKind::Adoption);
-        let adop_family = adop.detail().family.as_ref().expect("its family");
-        assert_eq!(xref(&data, adop_family.family), Some("@F2@"));
+        let adop_family = adop.family().expect("its family");
+        assert_eq!(xref(&data, adop_family.family()), Some("@F2@"));
         assert_eq!(
-            adop_family.adopted_by.as_ref().map(|a| &a.value),
-            Some(&Adoption::Husband)
+            adop_family
+                .adopted_by()
+                .map(View::<Phrased<Adoption>>::value),
+            Some(Adoption::Husband)
         );
         // The adoptive father is a spouse of that family.
-        assert!(data.individuals[3]
-            .spouse_of
-            .iter()
-            .any(|l| xref(&data, l.family) == Some("@F2@")));
+        assert!(individual(&data, 3)
+            .spouse_of()
+            .into_iter()
+            .any(|l| xref(&data, l.family()) == Some("@F2@")));
     }
 
     #[test]
@@ -1417,12 +1414,12 @@ mod tests {
             "fam Doe John + Roe Jane\nbeg\n- h Paul 1930\nend\n",
             "rel Doe Paul\nbeg\n- fost: Poe Peter + Poe Mary\nend\n",
         ));
-        let foster = &data.families[1];
-        assert!(foster.husband.is_some() && foster.wife.is_some());
-        let paul = &data.individuals[2];
-        assert!(paul.child_of.iter().any(|l| {
-            xref(&data, l.family) == Some("@F2@")
-                && l.detail().pedigree.as_ref().map(|p| &p.value) == Some(&Pedigree::Foster)
+        let foster = family(&data, 1);
+        assert!(foster.husband().is_some() && foster.wife().is_some());
+        let paul = individual(&data, 2);
+        assert!(paul.child_of().into_iter().any(|l| {
+            xref(&data, l.family()) == Some("@F2@")
+                && l.pedigree().map(View::<Phrased<Pedigree>>::value) == Some(Pedigree::Foster)
         }));
         // Fostering is no adoption.
         assert!(paul.events_of(EventKind::Adoption).next().is_none());
@@ -1434,7 +1431,7 @@ mod tests {
             "page-ext Gallery\n  content\nend page-ext\n",
             "wizard-note henri\n  1234\nend wizard-note\n",
         ));
-        let tags: Vec<_> = extensions(&data, &data.extra)
+        let tags: Vec<_> = extensions(data.extra())
             .into_iter()
             .map(|(tag, _)| tag)
             .collect();
@@ -1453,7 +1450,7 @@ mod tests {
         };
         let mut data = Dataset::new(GedcomVersion::V5_5_1);
         let ids = Ids::new(data.store_mut(), 0, 0);
-        data.extra.push(page_tag(&ids, ids.page, &page));
+        data.push(Record::Other(Box::new(page_tag(&ids, ids.page, &page))));
         let written = GedcomWriter::new().write_to_string(&data).expect("writes");
         assert!(
             written.contains("0 _GWPAGE Sample\n1 NOTE first\n2 CONT\n2 CONT third\n"),
@@ -1461,17 +1458,22 @@ mod tests {
         );
         let read = Dataset::parse(written);
         assert_eq!(
-            read.extra[0].to_structure(&read),
-            data.extra[0].to_structure(&data)
+            read.extra().first().unwrap().to_structure(),
+            data.extra().first().unwrap().to_structure()
         );
     }
 
     #[test]
     fn the_header_records_the_producer() {
         let data = convert("fam A B + C D\n");
-        let source = data.header.as_ref().unwrap().source.as_ref().unwrap();
-        assert_eq!(text(&data, &source.product), "GENEWEB");
-        assert!(text(&data, source.name.as_ref().unwrap()).starts_with("geneweb "));
+        let source = data.header().unwrap().source.as_ref().unwrap();
+        assert_eq!(source.product.to_str(&data), "GENEWEB");
+        assert!(source
+            .name
+            .as_ref()
+            .unwrap()
+            .to_str(&data)
+            .starts_with("geneweb "));
     }
 
     /// The conversion, a GEDCOM 5.5.1 dataset, is written as conformant GEDCOM 5.5.1 as
