@@ -1,6 +1,6 @@
 [package]
 name = "geneweb"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 # Dictated by oxidged, whose own rust-version is 1.88.
 rust-version = "1.88"
@@ -28,7 +28,7 @@ include = [
 ]
 
 [dependencies]
-oxidged = "0.1.0"
+oxidged = "0.2.0"
 
 [lints.rust]
 unsafe_code = "forbid"
