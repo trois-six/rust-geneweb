@@ -1,6 +1,6 @@
 [package]
 name = "geneweb"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 # Dictated by oxidged, whose own rust-version is 1.88.
 rust-version = "1.88"
@@ -23,16 +23,15 @@ include = [
     "tests/**/*.rs",
     "tests/fixtures/*.gw",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
 ]
 
 [dependencies]
-oxidged = "0.1"
-
-# oxidged (a conformant, lenient GEDCOM reader and writer) is not published yet: its main
-# branch stands in for the release. The patch goes once oxidged 0.1 is on crates.io.
-[patch.crates-io]
-oxidged = { git = "https://github.com/trois-six/oxidged", branch = "main" }
+# oxidged (a conformant, lenient GEDCOM reader and writer) is not on crates.io yet: its main
+# branch stands in for 0.1.0 until then. Publishing strips the git source and keeps the
+# version requirement.
+oxidged = { version = "0.1.0", git = "https://github.com/trois-six/oxidged", branch = "main" }
 
 [lints.rust]
 unsafe_code = "forbid"

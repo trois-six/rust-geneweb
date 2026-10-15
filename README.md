@@ -82,6 +82,11 @@ cargo test
 cargo clippy --all-targets
 ```
 
+## Changes
+
+See [CHANGELOG.md](CHANGELOG.md). The crate needs Rust 1.88 or later, the minimum
+[`oxidged`](https://github.com/trois-six/oxidged) supports.
+
 ## Licence
 
 MIT.
