@@ -4,7 +4,7 @@ All notable changes to this crate are documented in this file. The format follow
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the crate adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [0.4.0] — Unreleased
+## [0.4.0] — 2026-10-15
 
 The GEDCOM conversion moves from [`ged_io`](https://github.com/ge3224/ged_io) 0.17 to
 [`oxidged`](https://github.com/trois-six/oxidged) 0.1, a fork of ged_io 0.17 redesigned

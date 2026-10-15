@@ -12,4 +12,5 @@ dependencies = [
 [[package]]
 name = "oxidged"
 version = "0.1.0"
-source = "git+https://github.com/trois-six/oxidged?branch=main#8a38acaeb7edf57f3af9a4c811ba9c131de87fdb"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05feb2933c6dd01892c5fc6761fa99c1acd32669dcc921281c6f5e28c6dd17c8"

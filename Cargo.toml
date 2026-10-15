@@ -28,10 +28,7 @@ include = [
 ]
 
 [dependencies]
-# oxidged (a conformant, lenient GEDCOM reader and writer) is not on crates.io yet: its main
-# branch stands in for 0.1.0 until then. Publishing strips the git source and keeps the
-# version requirement.
-oxidged = { version = "0.1.0", git = "https://github.com/trois-six/oxidged", branch = "main" }
+oxidged = "0.1.0"
 
 [lints.rust]
 unsafe_code = "forbid"
