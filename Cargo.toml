@@ -2,10 +2,10 @@
 name = "geneweb"
 version = "0.3.0"
 edition = "2021"
-# Dictated by ged_io, whose own rust-version is 1.88.
+# Dictated by oxidged, whose own rust-version is 1.88.
 rust-version = "1.88"
 authors = ["Pierre Erraud <trois.six+github@ik.me>"]
-description = "A parser for GeneWeb .gw genealogy files, with conversion to GEDCOM via ged_io"
+description = "A parser for GeneWeb .gw genealogy files, with conversion to GEDCOM via oxidged"
 keywords = ["genealogy", "geneweb", "gedcom", "parser", "family-trees"]
 categories = ["parser-implementations", "data-structures"]
 license = "MIT"
@@ -27,13 +27,12 @@ include = [
 ]
 
 [dependencies]
-ged_io = "0.17"
+oxidged = "0.1"
 
-# The redesigned ged_io (a new model; reading never fails, writing is conformant) is not
-# published yet: its branch stands in for the release. The patch goes, and the requirement
-# above becomes the released version, once ged_io publishes it.
+# oxidged (a conformant, lenient GEDCOM reader and writer) is not published yet: its main
+# branch stands in for the release. The patch goes once oxidged 0.1 is on crates.io.
 [patch.crates-io]
-ged_io = { git = "https://github.com/trois-six/ged_io", branch = "redesign" }
+oxidged = { git = "https://github.com/trois-six/oxidged", branch = "main" }
 
 [lints.rust]
 unsafe_code = "forbid"

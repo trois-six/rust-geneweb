@@ -10,8 +10,8 @@
 use std::io::Write;
 use std::path::Path;
 
-use ged_io::GedcomWriter;
 use geneweb::database::GwDatabase;
+use oxidged::GedcomWriter;
 
 fn main() -> std::process::ExitCode {
     let mut args = std::env::args_os().skip(1);

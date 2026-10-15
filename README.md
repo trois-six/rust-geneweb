@@ -13,12 +13,12 @@ the textual interchange format of the [GeneWeb](https://geneweb.tuxfamily.org) g
 software, produced by `gwu` and consumed by `gwc`. It supports the `gwplus` extension
 introduced in GeneWeb 7.00, which adds structured personal and family events.
 
-Once a file is read you can convert it to [`ged_io`](https://github.com/ge3224/ged_io)'s
+Once a file is read you can convert it to [`oxidged`](https://github.com/trois-six/oxidged)'s
 GEDCOM model and use everything that crate offers.
 
 ```rust,no_run
 use geneweb::database::GwDatabase;
-use ged_io::writer::GedcomWriter;
+use oxidged::writer::GedcomWriter;
 
 let bytes = std::fs::read("family.gw")?;
 let db = GwDatabase::read(&bytes, "family.gw")?;

@@ -27,7 +27,7 @@ pub enum Sex {
 /// Who may see a person's details on a served GeneWeb base.
 ///
 /// This has no GEDCOM counterpart and is one of the reasons this crate keeps its own
-/// model rather than parsing straight into `ged_io`'s.
+/// model rather than parsing straight into `oxidged`'s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Access {
     /// Visible only if the person holds a title. The default when no tag is given.

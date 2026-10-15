@@ -1,4 +1,4 @@
-//! A reader for GeneWeb `.gw` genealogy files, with conversion to GEDCOM via [`ged_io`].
+//! A reader for GeneWeb `.gw` genealogy files, with conversion to GEDCOM via [`oxidged`].
 //!
 //! `.gw` is the textual interchange format of the [GeneWeb](https://geneweb.tuxfamily.org)
 //! genealogy software — the format produced by `gwu` and consumed by `gwc`, and the
@@ -12,7 +12,7 @@
 //! 1. A faithful, lossless `.gw` syntax tree. GeneWeb has concepts GEDCOM has no room for
 //!    — per-person access rights, wizard notes, extended wiki pages, occurrence-numbered
 //!    keys — and this layer keeps all of them.
-//! 2. A conversion of that tree into [`ged_io`]'s GEDCOM model, where anything without a
+//! 2. A conversion of that tree into [`oxidged`]'s GEDCOM model, where anything without a
 //!    standard GEDCOM counterpart is preserved as a user-defined tag rather than dropped.
 //!
 //! # Reference

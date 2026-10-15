@@ -1,4 +1,4 @@
-//! Converting a `.gw` file into `ged_io`'s GEDCOM model.
+//! Converting a `.gw` file into `oxidged`'s GEDCOM model.
 //!
 //! # What survives, and how
 //!
@@ -28,14 +28,14 @@ pub mod event;
 
 use std::fmt::Write as _;
 
-use ged_io::model::ChildLink;
-use ged_io::model::{
+use oxidged::model::ChildLink;
+use oxidged::model::{
     Adoption, Association, Citation, CitationSource, Dataset, EnumList, Event, EventFamily,
     EventKind, Family, File, Header, HeaderSource, Individual, IndividualRef, MultimediaLink, Name,
     NamePiece, NamePieceKind, NameType, Node, Note, Pedigree, Phrased, Place, Record, Restriction,
     Sex as GedSex, SpouseLink, Store, TagId, Text, ThinVec, Value, XrefId,
 };
-use ged_io::GedcomVersion;
+use oxidged::GedcomVersion;
 
 use crate::database::{FamilyId, FamilyRecord, GwDatabase, PersonId, ResolvedWitness};
 use crate::model::event::{Event as GwEvent, FamilyEventName as F, WitnessKind};
@@ -323,7 +323,7 @@ fn title_value(title: &Title) -> String {
 
 /// The period a title was held, as `gwb2ged` writes it: `FROM start TO end`, either end
 /// possibly missing.
-fn title_period(title: &Title) -> Option<ged_io::model::Date> {
+fn title_period(title: &Title) -> Option<oxidged::model::Date> {
     let bound =
         |d: &Option<crate::date::GwDate>| d.as_ref().map(date::value).filter(|v| !v.is_empty());
     let value = match (bound(&title.date_start), bound(&title.date_end)) {
@@ -332,7 +332,7 @@ fn title_period(title: &Title) -> Option<ged_io::model::Date> {
         (None, Some(end)) => format!("TO {end}"),
         (Some(start), Some(end)) => format!("FROM {start} TO {end}"),
     };
-    Some(ged_io::model::Date::new(value))
+    Some(oxidged::model::Date::new(value))
 }
 
 /// The name a title is held under, as `gwb2ged` notes it: the person's public name for
@@ -348,11 +348,11 @@ fn title_holder<'a>(title: &'a Title, person: &'a Person) -> &'a str {
 // Some of these read no database state today, but they are part of one conversion
 // and are kept together so callers see a single, consistent surface.
 impl GwDatabase {
-    /// Converts this database into `ged_io`'s GEDCOM model: a GEDCOM 5.5.1 dataset
+    /// Converts this database into `oxidged`'s GEDCOM model: a GEDCOM 5.5.1 dataset
     /// whose texts it owns.
     ///
-    /// The result can be written with [`ged_io::GedcomWriter`], in any version it
-    /// writes, or inspected with the rest of the `ged_io` API.
+    /// The result can be written with [`oxidged::GedcomWriter`], in any version it
+    /// writes, or inspected with the rest of the `oxidged` API.
     #[must_use]
     pub fn to_gedcom(&self) -> Dataset {
         let implied = self.implied_families();
@@ -947,7 +947,7 @@ const _: Option<(&PersonEvent, &FamilyEvent, WitnessKind)> = None;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ged_io::model::{Items, View};
+    use oxidged::model::{Items, View};
 
     fn convert(input: &str) -> Dataset {
         GwDatabase::read(input.as_bytes(), "t.gw")
@@ -1439,11 +1439,11 @@ mod tests {
         assert!(tags.contains(&TAG_WIZARD));
     }
 
-    /// A page over several lines: `ged_io` writes the line breaks of an extension's text
+    /// A page over several lines: `oxidged` writes the line breaks of an extension's text
     /// as `CONT` lines, and reads them back into the text.
     #[test]
     fn a_page_of_several_lines_reads_back_as_written() {
-        use ged_io::GedcomWriter;
+        use oxidged::GedcomWriter;
         let page = crate::database::Page {
             name: "Sample".to_owned(),
             text: "first\n\nthird".to_owned(),
@@ -1483,7 +1483,7 @@ mod tests {
     /// event.
     #[test]
     fn the_writer_repairs_only_what_a_gw_file_cannot_say() {
-        use ged_io::GedcomWriter;
+        use oxidged::GedcomWriter;
         let data = convert(concat!(
             "fam Doe John #image p.jpg #nick Johnny [:Baron:Sampleton:1800::] #apriv k1900 ",
             "+1850 #sep Roe Jane\n",

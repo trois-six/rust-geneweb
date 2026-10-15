@@ -13,7 +13,7 @@
 //! Nothing is dropped: an event with no GEDCOM counterpart keeps its name in the label,
 //! and callers additionally record the original `.gw` tag as a user-defined tag.
 
-use ged_io::model::EventKind;
+use oxidged::model::EventKind;
 
 use crate::model::event::{FamilyEventName, PersonEventName, WitnessKind};
 

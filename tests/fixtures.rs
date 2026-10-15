@@ -150,13 +150,13 @@ fn gallery_page_keeps_its_media_reference() {
     assert!(text.to_str().contains("jean_pierre.0.galichet.jpg"));
 }
 
-/// Reading a `.gw` and writing GEDCOM, then reading that GEDCOM back with `ged_io`.
+/// Reading a `.gw` and writing GEDCOM, then reading that GEDCOM back with `oxidged`.
 ///
 /// This is the whole point of the crate: what comes out must be a file the wider GEDCOM
 /// ecosystem can read, not just something that round-trips through our own types.
 #[test]
 fn a_gw_file_exports_to_gedcom_and_reads_back() {
-    use ged_io::{GedcomBuilder, GedcomWriter};
+    use oxidged::{GedcomBuilder, GedcomWriter};
 
     let db = geneweb::database::GwDatabase::read(GALICHET, "galichet.gw").expect("parses");
     let data = db.to_gedcom();
@@ -171,10 +171,10 @@ fn a_gw_file_exports_to_gedcom_and_reads_back() {
     assert!(text.contains("0 @I1@ INDI"));
     assert!(text.contains("0 @F1@ FAM"));
 
-    // Back through ged_io's own parser: everybody and every family must survive.
+    // Back through oxidged's own parser: everybody and every family must survive.
     let reparsed = GedcomBuilder::new()
         .build_from_str(&text)
-        .expect("ged_io reads what we wrote");
+        .expect("oxidged reads what we wrote");
     assert_eq!(
         reparsed.individuals().len(),
         35,
@@ -193,7 +193,7 @@ fn a_gw_file_exports_to_gedcom_and_reads_back() {
 /// Emitting both produced two `DEAT` records for one death.
 #[test]
 fn a_structured_event_supersedes_the_line_it_repeats() {
-    use ged_io::model::EventKind;
+    use oxidged::model::EventKind;
 
     let db = geneweb::database::GwDatabase::read(GALICHET, "galichet.gw").expect("parses");
     let data = db.to_gedcom();

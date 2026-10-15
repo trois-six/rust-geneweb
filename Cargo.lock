@@ -3,13 +3,13 @@
 version = 4
 
 [[package]]
-name = "ged_io"
-version = "0.17.0"
-source = "git+https://github.com/trois-six/ged_io?branch=redesign#864c997ab9aa1bf6384e11585dacef0551bd98e1"
-
-[[package]]
 name = "geneweb"
 version = "0.3.0"
 dependencies = [
- "ged_io",
+ "oxidged",
 ]
+
+[[package]]
+name = "oxidged"
+version = "0.1.0"
+source = "git+https://github.com/trois-six/oxidged?branch=main#8a38acaeb7edf57f3af9a4c811ba9c131de87fdb"

@@ -3,15 +3,15 @@
 //! Follows `ged_date_dmy` in GeneWeb's `bin/gwb2ged/gwb2gedLib.ml`, so that this crate
 //! and GeneWeb's own exporter produce the same strings.
 //!
-//! `ged_io` keeps a date as the text it is written as, in GEDCOM syntax, so the whole job
+//! `oxidged` keeps a date as the text it is written as, in GEDCOM syntax, so the whole job
 //! here is formatting: precision keyword, calendar escape, zero-padded day, month *name*,
-//! year. `ged_io`'s writer converts that text to the grammar of the version it writes.
-//! The formatting stays here rather than in `ged_io`'s date values because it reproduces
+//! year. `oxidged`'s writer converts that text to the grammar of the version it writes.
+//! The formatting stays here rather than in `oxidged`'s date values because it reproduces
 //! `gwb2ged`: a zero-padded day, and a thirteenth Gregorian month kept as its number.
 
 use std::fmt::Write as _;
 
-use ged_io::model::Date;
+use oxidged::model::Date;
 
 use crate::date::{Calendar, Dmy, Dmy2, GwDate, Precision};
 
@@ -115,13 +115,13 @@ pub(crate) fn value(date: &GwDate) -> String {
     match date {
         GwDate::Structured { dmy, calendar } => format_dmy(dmy, *calendar),
         // The GEDCOM 5.5.1 date phrase GeneWeb emits: the value `(text)`, with no
-        // `PHRASE`. `ged_io`'s writer turns it into an empty `DATE` with a `PHRASE` when
+        // `PHRASE`. `oxidged`'s writer turns it into an empty `DATE` with a `PHRASE` when
         // it writes GEDCOM 7.
         GwDate::Text(text) => format!("({text})"),
     }
 }
 
-/// Converts a `.gw` date into a `ged_io` date.
+/// Converts a `.gw` date into a `oxidged` date.
 #[must_use]
 pub fn to_gedcom(date: &GwDate) -> Date {
     Date::new(value(date))
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn a_text_date_is_written_as_gedcom_5_5_1() {
-        use ged_io::{GedcomVersion, GedcomWriter};
+        use oxidged::{GedcomVersion, GedcomWriter};
         let db = crate::database::GwDatabase::read(
             b"fam Doe John 0(vers_la_Saint-Jean) + Roe Jane\n",
             "t.gw",
