@@ -1,6 +1,6 @@
 name: Release
 
-# A `v*` tag gets its GitHub release, named after the crate and described by
+# A `v*` tag gets its GitHub release, named after the tag and described by
 # the tag's section of CHANGELOG.md. A manual run does the same for a tag
 # pushed earlier, reading the CHANGELOG of the branch it runs on.
 
@@ -31,7 +31,6 @@ jobs:
       - name: Extract the release notes
         run: |
           version="${TAG#v}"
-          echo "VERSION=$version" >> "$GITHUB_ENV"
           awk -v head="## [$version]" '
             /^## \[/ { if (found) exit; if (index($0, head) == 1) { found = 1; next } }
             /^Earlier releases are described/ { next }
@@ -46,7 +45,7 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.TAG }}
-          name: geneweb ${{ env.VERSION }}
+          name: ${{ env.TAG }}
           body_path: notes.md
           draft: false
           prerelease: false
