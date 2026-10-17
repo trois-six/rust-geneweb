@@ -4,6 +4,14 @@ All notable changes to this crate are documented in this file. The format follow
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the crate adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] — 2026-10-17
+
+### Changed
+
+- Depends on [`oxidged`](https://github.com/trois-six/oxidged) 0.3 instead of 0.2. The
+  `oxidged::Dataset` that `GwDatabase::to_gedcom` returns is now oxidged 0.3's: a crate
+  that also uses oxidged must use 0.3. The conversion and its output are unchanged.
+
 ## [0.5.0] — 2026-10-15
 
 ### Changed

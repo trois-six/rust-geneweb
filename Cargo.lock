@@ -4,13 +4,13 @@ version = 4
 
 [[package]]
 name = "geneweb"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "oxidged",
 ]
 
 [[package]]
 name = "oxidged"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a13976ae5c5f2f1060a119ede0a109c617ce62ab21447c816acc94c21504c2e1"
+checksum = "a64dbbc52d0b998267ae0df8d675062a97c05dc257931453bd16dc0dc8d73bf4"
