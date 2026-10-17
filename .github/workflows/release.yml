@@ -1,0 +1,55 @@
+name: Release
+
+# A `v*` tag gets its GitHub release, named after the crate and described by
+# the tag's section of CHANGELOG.md. A manual run does the same for a tag
+# pushed earlier, reading the CHANGELOG of the branch it runs on.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing tag to release (vX.Y.Z)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: GitHub release
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # The lines between the version's `## [X.Y.Z]` heading and the next
+      # one, without the CHANGELOG's closing line; no entry is an error.
+      - name: Extract the release notes
+        run: |
+          version="${TAG#v}"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          awk -v head="## [$version]" '
+            /^## \[/ { if (found) exit; if (index($0, head) == 1) { found = 1; next } }
+            /^Earlier releases are described/ { next }
+            found
+          ' CHANGELOG.md | sed -e '/./,$!d' > notes.md
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md has no entry for $version"
+            exit 1
+          fi
+          cat notes.md
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          name: geneweb ${{ env.VERSION }}
+          body_path: notes.md
+          draft: false
+          prerelease: false
+          # The newest by date and version: a release made late for an earlier
+          # tag does not become the latest.
+          make_latest: legacy
